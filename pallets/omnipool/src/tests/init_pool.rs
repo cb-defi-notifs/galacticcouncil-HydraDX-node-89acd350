@@ -236,3 +236,100 @@ fn initialize_pool_should_fail_when_stable_asset_is_not_registered() {
 			);
 		});
 }
+
+#[test]
+fn rococo() {
+	let stable_amount =50_000 * ONE * 1_000_000;
+	let native_amount = 936_329_588_000_000_000;
+	let dot_amount = 8771_929_825_0000;
+
+	ExtBuilder::default()
+		.with_registered_asset(1000)
+		.with_endowed_accounts(vec![
+			(Omnipool::protocol_account(), HDX, native_amount),
+			(Omnipool::protocol_account(), DAI, stable_amount),
+			(Omnipool::protocol_account(), 1000, dot_amount),
+		])
+		.build()
+		.execute_with(|| {
+
+			let native_price = FixedU128::from_inner(1201500000000000);
+			let stable_price = FixedU128::from_inner(45_000_000_000);
+
+			dbg!(native_price);
+			dbg!(stable_price);
+
+			// ACT
+			assert_ok!(Omnipool::initialize_pool(
+				Origin::root(),
+				stable_price,
+				native_price,
+				Permill::from_percent(100),
+				Permill::from_percent(10)
+			));
+
+			assert_pool_state!(
+				3374999999982000,
+				74999999999600000000000,
+				SimpleImbalance::default()
+			);
+
+			assert_asset_state!(
+				DAI,
+				AssetReserveState {
+					reserve: 50000000000000000000000,
+					hub_reserve: 2250_000_000_000_000,
+					shares: 50000000000000000000000,
+					protocol_shares: 50000000000000000000000,
+					cap: 1000000000000000000,
+					tradable: Tradability::default(),
+				}
+			);
+			assert_asset_state!(
+				HDX,
+				AssetReserveState {
+					reserve: native_amount,
+					hub_reserve: 1124999999982000,
+					shares:936329588000000000 ,
+					protocol_shares:936329588000000000 ,
+					cap: 100000000000000000,
+					tradable: Tradability::default(),
+				}
+			);
+
+			assert_balance!(Omnipool::protocol_account(), DAI, stable_amount);
+			assert_balance!(Omnipool::protocol_account(), HDX, native_amount);
+
+			assert_eq!(HubAssetTradability::<Test>::get(), Tradability::SELL);
+
+			let token_price = FixedU128::from_inner(25_650_000_000_000_000_000);
+
+			assert_ok!(Omnipool::add_token(
+				Origin::root(),
+				1_000,
+				token_price,
+				Permill::from_percent(100),
+				LP1
+			));
+
+			assert_pool_state!(
+				5625000000094500,
+				125000000002100000000000,
+				SimpleImbalance::default()
+			);
+
+			assert_asset_state!(
+				1000,
+				AssetReserveState {
+					reserve: dot_amount,
+					hub_reserve: 2250_000_000_112_500,
+					shares:87719298250000,
+					protocol_shares:0,
+					cap: 1000000000000000000,
+					tradable: Tradability::default(),
+				}
+			);
+
+
+		});
+}
