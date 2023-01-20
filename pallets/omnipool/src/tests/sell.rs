@@ -28,12 +28,12 @@ fn simple_sell_works() {
 
 			assert_ok!(Omnipool::sell(Origin::signed(LP1), 100, 200, sell_amount, min_limit));
 
-			assert_eq!(Tokens::free_balance(100, &LP1), 550000000000000);
-			assert_eq!(Tokens::free_balance(200, &LP1), 47808764940238);
-			assert_eq!(Tokens::free_balance(LRNA, &Omnipool::protocol_account()), 13360 * ONE);
-			assert_eq!(Tokens::free_balance(100, &Omnipool::protocol_account()), 2450 * ONE);
+			assert_eq!(Tokens::balance(100, &LP1), 550000000000000);
+			assert_eq!(Tokens::balance(200, &LP1), 47808764940238);
+			assert_eq!(Tokens::balance(LRNA, &Omnipool::protocol_account()), 13360 * ONE);
+			assert_eq!(Tokens::balance(100, &Omnipool::protocol_account()), 2450 * ONE);
 			assert_eq!(
-				Tokens::free_balance(200, &Omnipool::protocol_account()),
+				Tokens::balance(200, &Omnipool::protocol_account()),
 				1952191235059762
 			);
 
@@ -394,10 +394,10 @@ fn simple_sell_with_fee_works() {
 
 			assert_ok!(Omnipool::sell(Origin::signed(LP1), 100, 200, sell_amount, min_limit));
 
-			assert_eq!(Tokens::free_balance(100, &LP1), 950_000_000_000_000);
-			assert_eq!(Tokens::free_balance(200, &LP1), expected_10_percent_fee);
+			assert_eq!(Tokens::balance(100, &LP1), 950_000_000_000_000);
+			assert_eq!(Tokens::balance(200, &LP1), expected_10_percent_fee);
 			assert_eq!(
-				Tokens::free_balance(200, &Omnipool::protocol_account()),
+				Tokens::balance(200, &Omnipool::protocol_account()),
 				2000000000000000 - expected_10_percent_fee,
 			);
 		});
@@ -489,15 +489,15 @@ fn sell_should_work_when_trading_native_asset() {
 
 			assert_ok!(Omnipool::sell(Origin::signed(LP1), HDX, 200, sell_amount, min_limit));
 
-			assert_eq!(Tokens::free_balance(HDX, &LP1), 950000000000000);
-			assert_eq!(Tokens::free_balance(200, &LP1), 53_471_964_352_023);
-			assert_eq!(Tokens::free_balance(LRNA, &Omnipool::protocol_account()), 13360 * ONE);
+			assert_eq!(Tokens::balance(HDX, &LP1), 950000000000000);
+			assert_eq!(Tokens::balance(200, &LP1), 53_471_964_352_023);
+			assert_eq!(Tokens::balance(LRNA, &Omnipool::protocol_account()), 13360 * ONE);
 			assert_eq!(
-				Tokens::free_balance(HDX, &Omnipool::protocol_account()),
+				Tokens::balance(HDX, &Omnipool::protocol_account()),
 				NATIVE_AMOUNT + sell_amount
 			);
 			assert_eq!(
-				Tokens::free_balance(200, &Omnipool::protocol_account()),
+				Tokens::balance(200, &Omnipool::protocol_account()),
 				1946528035647977
 			);
 

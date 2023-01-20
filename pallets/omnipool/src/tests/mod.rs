@@ -34,14 +34,14 @@ macro_rules! assert_eq_approx {
 #[macro_export]
 macro_rules! assert_balance {
 	( $x:expr, $y:expr, $z:expr) => {{
-		assert_eq!(Tokens::free_balance($y, &$x), $z);
+		assert_eq!(Tokens::balance($y, &$x), $z);
 	}};
 }
 
 #[macro_export]
 macro_rules! assert_balance_approx {
 	( $x:expr, $y:expr, $z:expr, $l:expr) => {{
-		let b = Tokens::free_balance($y, &$x);
+		let b = Tokens::balance($y, &$x);
 
 		let diff = if $z >= b { $z - b } else { b - $z };
 		if diff > $l {
@@ -55,7 +55,7 @@ macro_rules! assert_hub_asset {
 	( ) => {{
 		let hub_reserves: Vec<Balance> = Assets::<Test>::iter().map(|v| v.1.hub_reserve).collect();
 		assert_eq!(
-			Tokens::free_balance(LRNA, &Omnipool::protocol_account()),
+			Tokens::balance(LRNA, &Omnipool::protocol_account()),
 			hub_reserves.iter().sum::<Balance>(),
 			"Hub liquidity incorrect\n"
 		);
@@ -68,14 +68,14 @@ macro_rules! assert_pool_state {
 		let hub_reserves: Vec<Balance> = Assets::<Test>::iter().map(|v| v.1.hub_reserve).collect();
 		assert_eq!($x, hub_reserves.iter().sum::<Balance>());
 		assert_eq!(
-			Tokens::free_balance(LRNA, &Omnipool::protocol_account()),
+			Tokens::balance(LRNA, &Omnipool::protocol_account()),
 			$x,
 			"Hub liquidity incorrect\n"
 		);
-		let hub_reserve = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+		let hub_reserve = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 		let stable_asset = <Assets<Test>>::get(DAI).unwrap();
-		let stable_reserve = Tokens::free_balance(DAI, &Omnipool::protocol_account());
+		let stable_reserve = Tokens::balance(DAI, &Omnipool::protocol_account());
 
 		let tvl =
 			hydra_dx_math::omnipool::calculate_tvl(hub_reserve, (stable_reserve, stable_asset.hub_reserve)).unwrap();
@@ -88,16 +88,16 @@ macro_rules! assert_pool_state {
 macro_rules! assert_pool_state_approx {
 	( $x:expr, $y:expr, $z:expr) => {{
 		assert_eq_approx!(
-			Tokens::free_balance(LRNA, &Omnipool::protocol_account()),
+			Tokens::balance(LRNA, &Omnipool::protocol_account()),
 			$x,
 			20u128,
 			"Hub liquidity incorrect\n"
 		);
 
-		let hub_reserve = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+		let hub_reserve = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 		let stable_asset = <Assets<Test>>::get(DAI).unwrap();
-		let stable_reserve = Tokens::free_balance(DAI, &Omnipool::protocol_account());
+		let stable_reserve = Tokens::balance(DAI, &Omnipool::protocol_account());
 
 		let tvl =
 			hydra_dx_math::omnipool::calculate_tvl(hub_reserve, (stable_reserve, stable_asset.hub_reserve)).unwrap();
@@ -110,7 +110,7 @@ macro_rules! assert_pool_state_approx {
 #[macro_export]
 macro_rules! assert_asset_state {
 	( $x:expr, $y:expr) => {{
-		let reserve = Tokens::free_balance($x, &Omnipool::protocol_account());
+		let reserve = Tokens::balance($x, &Omnipool::protocol_account());
 		assert_eq!(reserve, $y.reserve);
 
 		let actual = Assets::<Test>::get($x).unwrap();

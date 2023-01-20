@@ -30,14 +30,14 @@ fn simple_buy_works() {
 			assert_ok!(Omnipool::buy(Origin::signed(LP1), 200, 100, buy_amount, max_limit));
 
 			// Assert
-			assert_eq!(Tokens::free_balance(100, &LP1), 547598253275108);
-			assert_eq!(Tokens::free_balance(200, &LP1), buy_amount);
-			assert_eq!(Tokens::free_balance(LRNA, &Omnipool::protocol_account()), 13360 * ONE);
+			assert_eq!(Tokens::balance(100, &LP1), 547598253275108);
+			assert_eq!(Tokens::balance(200, &LP1), buy_amount);
+			assert_eq!(Tokens::balance(LRNA, &Omnipool::protocol_account()), 13360 * ONE);
 			assert_eq!(
-				Tokens::free_balance(100, &Omnipool::protocol_account()),
+				Tokens::balance(100, &Omnipool::protocol_account()),
 				2452401746724892
 			);
-			assert_eq!(Tokens::free_balance(200, &Omnipool::protocol_account()), 1950 * ONE);
+			assert_eq!(Tokens::balance(200, &Omnipool::protocol_account()), 1950 * ONE);
 
 			assert_pool_state!(13_360 * ONE, 26_720 * ONE, SimpleImbalance::default());
 
@@ -351,9 +351,9 @@ fn simple_buy_with_fee_works() {
 		.execute_with(|| {
 			let token_amount = 2000 * ONE;
 
-			assert_eq!(Tokens::free_balance(200, &LP1), 0u128);
+			assert_eq!(Tokens::balance(200, &LP1), 0u128);
 
-			assert_eq!(Tokens::free_balance(200, &Omnipool::protocol_account()), token_amount);
+			assert_eq!(Tokens::balance(200, &Omnipool::protocol_account()), token_amount);
 
 			let buy_amount = 50 * ONE;
 			let max_limit = 100 * ONE;
@@ -367,12 +367,12 @@ fn simple_buy_with_fee_works() {
 
 			assert_ok!(Omnipool::buy(Origin::signed(LP1), 200, 100, buy_amount, max_limit));
 
-			assert_eq!(Tokens::free_balance(100, &LP1), 1000 * ONE - expect_sold_amount);
+			assert_eq!(Tokens::balance(100, &LP1), 1000 * ONE - expect_sold_amount);
 
-			assert_eq!(Tokens::free_balance(200, &LP1), buy_amount);
+			assert_eq!(Tokens::balance(200, &LP1), buy_amount);
 
 			assert_eq!(
-				Tokens::free_balance(100, &Omnipool::protocol_account()),
+				Tokens::balance(100, &Omnipool::protocol_account()),
 				token_amount + expect_sold_amount
 			);
 		});
@@ -515,15 +515,15 @@ fn buy_should_work_when_trading_native_asset() {
 
 			assert_ok!(Omnipool::buy(Origin::signed(LP1), 200, HDX, buy_amount, max_limit));
 
-			assert_eq!(Tokens::free_balance(HDX, &LP1), 953354861858628);
-			assert_eq!(Tokens::free_balance(200, &LP1), buy_amount);
-			assert_eq!(Tokens::free_balance(LRNA, &Omnipool::protocol_account()), 13360 * ONE);
+			assert_eq!(Tokens::balance(HDX, &LP1), 953354861858628);
+			assert_eq!(Tokens::balance(200, &LP1), buy_amount);
+			assert_eq!(Tokens::balance(LRNA, &Omnipool::protocol_account()), 13360 * ONE);
 			assert_eq!(
-				Tokens::free_balance(HDX, &Omnipool::protocol_account()),
+				Tokens::balance(HDX, &Omnipool::protocol_account()),
 				10046645138141372
 			);
 			assert_eq!(
-				Tokens::free_balance(200, &Omnipool::protocol_account()),
+				Tokens::balance(200, &Omnipool::protocol_account()),
 				1950000000000000
 			);
 

@@ -114,7 +114,7 @@ proptest! {
 
 				let old_imbalance = <HubAssetImbalance<Test>>::get();
 
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let old_asset_hub_liquidity = sum_asset_hub_liquidity();
 
@@ -134,7 +134,7 @@ proptest! {
 				assert_asset_invariant(&old_state_300, &new_state_300, FixedU128::from((TOLERANCE,ONE)), "Invariant 300");
 
 				// Total hub asset liquidity has not changed
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_eq!(old_hub_liquidity, new_hub_liquidity, "Total Hub liquidity has changed!");
 
@@ -209,7 +209,7 @@ proptest! {
 
 				let old_imbalance = <HubAssetImbalance<Test>>::get();
 
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let old_asset_hub_liquidity = sum_asset_hub_liquidity();
 
@@ -229,7 +229,7 @@ proptest! {
 				assert_asset_invariant(&old_state_300, &new_state_300, FixedU128::from((TOLERANCE,ONE)), "Invariant 300");
 
 				// Total hub asset liquidity has not changed
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_eq!(old_hub_liquidity, new_hub_liquidity, "Total Hub liquidity has changed!");
 
@@ -300,7 +300,7 @@ proptest! {
 
 				let old_imbalance = <HubAssetImbalance<Test>>::get();
 
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let old_asset_hub_liquidity = sum_asset_hub_liquidity();
 
@@ -320,7 +320,7 @@ proptest! {
 				assert_asset_invariant(&old_state_300, &new_state_300, FixedU128::from((TOLERANCE,ONE)), "Invariant 300");
 
 				// Total hub asset liquidity has not changed
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_eq!(old_hub_liquidity, new_hub_liquidity, "Total Hub liquidity has changed!");
 
@@ -395,7 +395,7 @@ proptest! {
 
 				let old_imbalance = <HubAssetImbalance<Test>>::get();
 
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let old_asset_hub_liquidity = sum_asset_hub_liquidity();
 
@@ -415,7 +415,7 @@ proptest! {
 				assert_asset_invariant(&old_state_300, &new_state_300, FixedU128::from((TOLERANCE,ONE)), "Invariant 300");
 
 				// Total hub asset liquidity has not changed
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_eq!(old_hub_liquidity, new_hub_liquidity, "Total Hub liquidity has changed!");
 
@@ -498,7 +498,7 @@ fn buy_invariant_case_01() {
 
 			let old_imbalance = <HubAssetImbalance<Test>>::get();
 
-			let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+			let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 			let old_asset_hub_liquidity = sum_asset_hub_liquidity();
 
@@ -534,7 +534,7 @@ fn buy_invariant_case_01() {
 			);
 
 			// Total hub asset liquidity has not changed
-			let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+			let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 			assert_eq!(old_hub_liquidity, new_hub_liquidity, "Total Hub liquidity has changed!");
 
@@ -616,7 +616,7 @@ fn buy_invariant_case_02() {
 
 			let old_imbalance = <HubAssetImbalance<Test>>::get();
 
-			let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+			let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 			let old_asset_hub_liquidity = sum_asset_hub_liquidity();
 
@@ -650,7 +650,7 @@ fn buy_invariant_case_02() {
 			);
 
 			// Total hub asset liquidity has not changed
-			let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+			let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 			assert_eq!(old_hub_liquidity, new_hub_liquidity, "Total Hub liquidity has changed!");
 
@@ -720,7 +720,7 @@ proptest! {
 			.execute_with(|| {
 				let old_state_300 = Omnipool::load_asset_state(300).unwrap();
 
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let old_asset_hub_liquidity = sum_asset_hub_liquidity();
 
@@ -738,7 +738,7 @@ proptest! {
 				assert_asset_invariant(&old_state_300, &new_state_300, FixedU128::from((TOLERANCE,ONE)), "Invariant 300");
 
 				// Total hub asset liquidity has not changed
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_eq!(old_hub_liquidity + amount, new_hub_liquidity, "Total Hub liquidity increased incorrectly!");
 
@@ -826,7 +826,7 @@ proptest! {
 			.execute_with(|| {
 				let old_state_300 = Omnipool::load_asset_state(300).unwrap();
 
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let old_asset_hub_liquidity = sum_asset_hub_liquidity();
 
@@ -844,7 +844,7 @@ proptest! {
 				assert_asset_invariant(&old_state_300, &new_state_300, FixedU128::from((TOLERANCE,ONE)), "Invariant 300");
 
 				// Total hub asset liquidity has not changed
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let new_imbalance = <HubAssetImbalance<Test>>::get();
 
@@ -911,12 +911,12 @@ proptest! {
 			.build()
 			.execute_with(|| {
 				let old_imbalance = <HubAssetImbalance<Test>>::get();
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_ok!(Omnipool::add_token(Origin::root(), token_1.asset_id, token_1.price,Permill::from_percent(100),lp1));
 
 				let new_imbalance = <HubAssetImbalance<Test>>::get();
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_eq_approx!( FixedU128::from((old_imbalance.value, old_hub_liquidity)),
 								   FixedU128::from((new_imbalance.value, new_hub_liquidity)),
@@ -928,12 +928,12 @@ proptest! {
 				assert_ok!(Omnipool::add_token(Origin::root(), token_3.asset_id, token_3.price,Permill::from_percent(100), lp3));
 
 				let old_imbalance = <HubAssetImbalance<Test>>::get();
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_ok!(Omnipool::add_token(Origin::root(), token_4.asset_id, token_4.price,Permill::from_percent(100),lp4));
 
 				let new_imbalance = <HubAssetImbalance<Test>>::get();
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_eq_approx!( FixedU128::from((old_imbalance.value, old_hub_liquidity)),
 								   FixedU128::from((new_imbalance.value, new_hub_liquidity)),
@@ -948,7 +948,7 @@ proptest! {
 
 				let old_imbalance = <HubAssetImbalance<Test>>::get();
 
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_ok!(Omnipool::add_liquidity(Origin::signed(seller), 200, amount));
 
@@ -961,7 +961,7 @@ proptest! {
 						"Price has changed after add liquidity");
 
 				let new_imbalance = <HubAssetImbalance<Test>>::get();
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				assert_eq_approx!( FixedU128::from((old_imbalance.value, old_hub_liquidity)),
 								   FixedU128::from((new_imbalance.value, new_hub_liquidity)),
@@ -970,10 +970,10 @@ proptest! {
 				);
 
 				// check enforcement of overall tvl cap
-				let hub_reserve = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let hub_reserve = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let stable_asset = <Assets<Test>>::get(DAI).unwrap();
-				let stable_reserve = Tokens::free_balance(DAI, &Omnipool::protocol_account());
+				let stable_reserve = Tokens::balance(DAI, &Omnipool::protocol_account());
 
 				let global_tvl = hydra_dx_math::omnipool::calculate_tvl(hub_reserve, (stable_reserve, stable_asset.hub_reserve)).unwrap();
 				assert!( global_tvl <= TvlCap::<Test>::get());
@@ -1031,7 +1031,7 @@ proptest! {
 			.build()
 			.execute_with(|| {
 				let old_imbalance = <HubAssetImbalance<Test>>::get();
-				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let old_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let position_id = <NextPositionId<Test>>::get();
 				assert_ok!(Omnipool::add_liquidity(Origin::signed(seller), 200, amount));
@@ -1052,7 +1052,7 @@ proptest! {
 				let new_state_200 = Omnipool::load_asset_state(200).unwrap();
 				let new_imbalance = <HubAssetImbalance<Test>>::get();
 
-				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let new_hub_liquidity = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				// Price should not change
 				assert_eq_approx!(old_state_200.price().unwrap(),
@@ -1067,10 +1067,10 @@ proptest! {
 				);
 
 				// check enforcement of overall tvl cap
-				let hub_reserve = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+				let hub_reserve = Tokens::balance(LRNA, &Omnipool::protocol_account());
 
 				let stable_asset = <Assets<Test>>::get(DAI).unwrap();
-				let stable_reserve = Tokens::free_balance(DAI, &Omnipool::protocol_account());
+				let stable_reserve = Tokens::balance(DAI, &Omnipool::protocol_account());
 
 				let global_tvl = hydra_dx_math::omnipool::calculate_tvl(hub_reserve, (stable_reserve, stable_asset.hub_reserve)).unwrap();
 				assert!( global_tvl <= TvlCap::<Test>::get());

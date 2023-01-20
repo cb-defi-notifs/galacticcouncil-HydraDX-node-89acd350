@@ -80,7 +80,6 @@ use sp_std::prelude::*;
 use frame_support::traits::tokens::nonfungibles::{Create, Inspect, Mutate};
 use hydra_dx_math::omnipool::types::{BalanceUpdate, I129};
 use hydradx_traits::Registry;
-use orml_traits::MultiCurrency;
 use scale_info::TypeInfo;
 use sp_runtime::{ArithmeticError, DispatchError, FixedPointNumber, FixedU128, Permill};
 
@@ -98,6 +97,9 @@ pub mod weights;
 use crate::types::{AssetReserveState, AssetState, Balance, SimpleImbalance, Tradability};
 pub use pallet::*;
 pub use weights::WeightInfo;
+
+use frame_support::traits::tokens::fungibles::{Inspect as FungibleInspect, Mutate as FungibleMutate, Transfer};
+use frame_support::traits::tokens::WithdrawConsequence;
 
 /// NFT class id type of provided nft implementation
 type NFTCollectionIdOf<T> =
@@ -133,7 +135,9 @@ pub mod pallet {
 			+ TypeInfo;
 
 		/// Multi currency mechanism
-		type Currency: MultiCurrency<Self::AccountId, CurrencyId = Self::AssetId, Balance = Balance>;
+		type Currency: FungibleMutate<Self::AccountId>
+			+ Transfer<Self::AccountId>
+			+ FungibleInspect<Self::AccountId, AssetId = Self::AssetId, Balance = Balance>;
 
 		/// Origin that can add token, refund refused asset and  set tvl cap.
 		type AuthorityOrigin: EnsureOrigin<Self::Origin>;
@@ -410,9 +414,8 @@ pub mod pallet {
 				Error::<T>::AssetNotRegistered
 			);
 
-			let native_asset_reserve = T::Currency::free_balance(T::HdxAssetId::get(), &Self::protocol_account());
-			let stable_asset_reserve =
-				T::Currency::free_balance(T::StableCoinAssetId::get(), &Self::protocol_account());
+			let native_asset_reserve = T::Currency::balance(T::HdxAssetId::get(), &Self::protocol_account());
+			let stable_asset_reserve = T::Currency::balance(T::StableCoinAssetId::get(), &Self::protocol_account());
 
 			// Ensure that stable asset has been transferred to protocol account
 			ensure!(stable_asset_reserve > Balance::zero(), Error::<T>::MissingBalance);
@@ -512,7 +515,7 @@ pub mod pallet {
 
 			ensure!(initial_price > FixedU128::zero(), Error::<T>::InvalidInitialAssetPrice);
 
-			let amount = T::Currency::free_balance(asset, &Self::protocol_account());
+			let amount = T::Currency::balance(asset, &Self::protocol_account());
 
 			ensure!(
 				amount >= T::MinimumPoolLiquidity::get() && amount > 0,
@@ -551,8 +554,7 @@ pub mod pallet {
 			});
 
 			let current_imbalance = <HubAssetImbalance<T>>::get();
-			let current_hub_asset_liquidity =
-				T::Currency::free_balance(T::HubAssetId::get(), &Self::protocol_account());
+			let current_hub_asset_liquidity = T::Currency::balance(T::HubAssetId::get(), &Self::protocol_account());
 
 			let delta_imbalance = hydra_dx_math::omnipool::calculate_delta_imbalance(
 				hub_reserve,
@@ -613,7 +615,7 @@ pub mod pallet {
 			);
 
 			ensure!(
-				T::Currency::ensure_can_withdraw(asset, &who, amount).is_ok(),
+				T::Currency::can_withdraw(asset, &who, amount) == WithdrawConsequence::Success,
 				Error::<T>::InsufficientBalance
 			);
 
@@ -625,8 +627,7 @@ pub mod pallet {
 			);
 
 			let current_imbalance = <HubAssetImbalance<T>>::get();
-			let current_hub_asset_liquidity =
-				T::Currency::free_balance(T::HubAssetId::get(), &Self::protocol_account());
+			let current_hub_asset_liquidity = T::Currency::balance(T::HubAssetId::get(), &Self::protocol_account());
 
 			//
 			// Calculate add liquidity state changes
@@ -648,7 +649,7 @@ pub mod pallet {
 
 			let hub_reserve_ratio = FixedU128::checked_from_rational(
 				new_asset_state.hub_reserve,
-				T::Currency::free_balance(T::HubAssetId::get(), &Self::protocol_account())
+				T::Currency::balance(T::HubAssetId::get(), &Self::protocol_account())
 					.checked_add(*state_changes.asset.delta_hub_reserve)
 					.ok_or(ArithmeticError::Overflow)?,
 			)
@@ -690,6 +691,7 @@ pub mod pallet {
 				&who,
 				&Self::protocol_account(),
 				*state_changes.asset.delta_reserve,
+				true,
 			)?;
 
 			Self::update_imbalance(state_changes.delta_imbalance)?;
@@ -756,8 +758,7 @@ pub mod pallet {
 			);
 
 			let current_imbalance = <HubAssetImbalance<T>>::get();
-			let current_hub_asset_liquidity =
-				T::Currency::free_balance(T::HubAssetId::get(), &Self::protocol_account());
+			let current_hub_asset_liquidity = T::Currency::balance(T::HubAssetId::get(), &Self::protocol_account());
 
 			//
 			// calculate state changes of remove liquidity
@@ -796,6 +797,7 @@ pub mod pallet {
 				&Self::protocol_account(),
 				&who,
 				*state_changes.asset.delta_reserve,
+				true,
 			)?;
 
 			Self::update_imbalance(state_changes.delta_imbalance)?;
@@ -816,6 +818,7 @@ pub mod pallet {
 					&Self::protocol_account(),
 					&who,
 					state_changes.lp_hub_amount,
+					true,
 				)?;
 			}
 
@@ -933,7 +936,7 @@ pub mod pallet {
 			);
 
 			ensure!(
-				T::Currency::ensure_can_withdraw(asset_in, &who, amount).is_ok(),
+				T::Currency::can_withdraw(asset_in, &who, amount) == WithdrawConsequence::Success,
 				Error::<T>::InsufficientBalance
 			);
 
@@ -1002,12 +1005,14 @@ pub mod pallet {
 				&who,
 				&Self::protocol_account(),
 				*state_changes.asset_in.delta_reserve,
+				true,
 			)?;
 			T::Currency::transfer(
 				asset_out,
 				&Self::protocol_account(),
 				&who,
 				*state_changes.asset_out.delta_reserve,
+				true,
 			)?;
 
 			// Hub liquidity update - work out difference between in and amount so only one update needed.
@@ -1032,7 +1037,7 @@ pub mod pallet {
 					return Err(Error::<T>::HubAssetUpdateError.into());
 				}
 				BalanceUpdate::Decrease(amount) => {
-					T::Currency::withdraw(T::HubAssetId::get(), &Self::protocol_account(), amount)?;
+					T::Currency::burn_from(T::HubAssetId::get(), &Self::protocol_account(), amount)?;
 				}
 			};
 
@@ -1129,7 +1134,8 @@ pub mod pallet {
 			.ok_or(ArithmeticError::Overflow)?;
 
 			ensure!(
-				T::Currency::ensure_can_withdraw(asset_in, &who, *state_changes.asset_in.delta_reserve).is_ok(),
+				T::Currency::can_withdraw(asset_in, &who, *state_changes.asset_in.delta_reserve)
+					== WithdrawConsequence::Success,
 				Error::<T>::InsufficientBalance
 			);
 
@@ -1159,12 +1165,14 @@ pub mod pallet {
 				&who,
 				&Self::protocol_account(),
 				*state_changes.asset_in.delta_reserve,
+				true,
 			)?;
 			T::Currency::transfer(
 				asset_out,
 				&Self::protocol_account(),
 				&who,
 				*state_changes.asset_out.delta_reserve,
+				true,
 			)?;
 
 			// Hub liquidity update - work out difference between in and amount so only one update needed.
@@ -1189,7 +1197,7 @@ pub mod pallet {
 					return Err(Error::<T>::HubAssetUpdateError.into());
 				}
 				BalanceUpdate::Decrease(amount) => {
-					T::Currency::withdraw(T::HubAssetId::get(), &Self::protocol_account(), amount)?;
+					T::Currency::burn_from(T::HubAssetId::get(), &Self::protocol_account(), amount)?;
 				}
 			};
 
@@ -1279,11 +1287,11 @@ pub mod pallet {
 			ensure!(!Assets::<T>::contains_key(asset_id), Error::<T>::AssetAlreadyAdded);
 
 			ensure!(
-				T::Currency::ensure_can_withdraw(asset_id, &Self::protocol_account(), amount).is_ok(),
+				T::Currency::can_withdraw(asset_id, &Self::protocol_account(), amount) == WithdrawConsequence::Success,
 				Error::<T>::InsufficientBalance
 			);
 
-			T::Currency::transfer(asset_id, &Self::protocol_account(), &recipient, amount)?;
+			T::Currency::transfer(asset_id, &Self::protocol_account(), &recipient, amount, true)?;
 
 			Self::deposit_event(Event::AssetRefunded {
 				asset_id,
@@ -1367,14 +1375,14 @@ impl<T: Config> Pallet<T> {
 	/// Return NoStableCoinInPool if stable asset is not yet in the pool.
 	fn stable_asset() -> Result<(Balance, Balance), DispatchError> {
 		let stable_asset = <Assets<T>>::get(T::StableCoinAssetId::get()).ok_or(Error::<T>::NoStableAssetInPool)?;
-		let stable_reserve = T::Currency::free_balance(T::StableCoinAssetId::get(), &Self::protocol_account());
+		let stable_reserve = T::Currency::balance(T::StableCoinAssetId::get(), &Self::protocol_account());
 		Ok((stable_reserve, stable_asset.hub_reserve))
 	}
 
 	/// Retrieve state of asset from the pool and its pool balance
 	fn load_asset_state(asset_id: T::AssetId) -> Result<AssetReserveState<Balance>, DispatchError> {
 		let state = <Assets<T>>::get(asset_id).ok_or(Error::<T>::AssetNotFound)?;
-		let reserve = T::Currency::free_balance(asset_id, &Self::protocol_account());
+		let reserve = T::Currency::balance(asset_id, &Self::protocol_account());
 		Ok((state, reserve).into())
 	}
 
@@ -1419,10 +1427,12 @@ impl<T: Config> Pallet<T> {
 	fn update_hub_asset_liquidity(delta_amount: &BalanceUpdate<Balance>) -> DispatchResult {
 		match delta_amount {
 			BalanceUpdate::Increase(amount) => {
-				T::Currency::deposit(T::HubAssetId::get(), &Self::protocol_account(), *amount)
+				T::Currency::mint_into(T::HubAssetId::get(), &Self::protocol_account(), *amount)
 			}
 			BalanceUpdate::Decrease(amount) => {
-				T::Currency::withdraw(T::HubAssetId::get(), &Self::protocol_account(), *amount)
+				let withdrawn = T::Currency::burn_from(T::HubAssetId::get(), &Self::protocol_account(), *amount)?;
+				debug_assert!(withdrawn == *amount);
+				Ok(())
 			}
 		}
 	}
@@ -1443,7 +1453,7 @@ impl<T: Config> Pallet<T> {
 
 	/// Calculate new tvl balance and ensure that it is below TVL Cap.
 	fn ensure_tvl_cap() -> DispatchResult {
-		let current_hub_asset_liquidity = T::Currency::free_balance(T::HubAssetId::get(), &Self::protocol_account());
+		let current_hub_asset_liquidity = T::Currency::balance(T::HubAssetId::get(), &Self::protocol_account());
 		let stable_asset = Self::stable_asset()?;
 
 		let updated_tvl = hydra_dx_math::omnipool::calculate_tvl(current_hub_asset_liquidity, stable_asset)
@@ -1479,7 +1489,7 @@ impl<T: Config> Pallet<T> {
 		);
 
 		let current_imbalance = <HubAssetImbalance<T>>::get();
-		let current_hub_asset_liquidity = T::Currency::free_balance(T::HubAssetId::get(), &Self::protocol_account());
+		let current_hub_asset_liquidity = T::Currency::balance(T::HubAssetId::get(), &Self::protocol_account());
 
 		let state_changes = hydra_dx_math::omnipool::calculate_sell_hub_state_changes(
 			&(&asset_state).into(),
@@ -1517,12 +1527,14 @@ impl<T: Config> Pallet<T> {
 			who,
 			&Self::protocol_account(),
 			*state_changes.asset.delta_hub_reserve,
+			true,
 		)?;
 		T::Currency::transfer(
 			asset_out,
 			&Self::protocol_account(),
 			who,
 			*state_changes.asset.delta_reserve,
+			true,
 		)?;
 
 		Self::update_imbalance(state_changes.delta_imbalance)?;
@@ -1567,7 +1579,7 @@ impl<T: Config> Pallet<T> {
 		);
 
 		let current_imbalance = <HubAssetImbalance<T>>::get();
-		let current_hub_asset_liquidity = T::Currency::free_balance(T::HubAssetId::get(), &Self::protocol_account());
+		let current_hub_asset_liquidity = T::Currency::balance(T::HubAssetId::get(), &Self::protocol_account());
 
 		let state_changes = hydra_dx_math::omnipool::calculate_buy_for_hub_asset_state_changes(
 			&(&asset_state).into(),
@@ -1604,12 +1616,14 @@ impl<T: Config> Pallet<T> {
 			who,
 			&Self::protocol_account(),
 			*state_changes.asset.delta_hub_reserve,
+			true,
 		)?;
 		T::Currency::transfer(
 			asset_out,
 			&Self::protocol_account(),
 			who,
 			*state_changes.asset.delta_reserve,
+			true,
 		)?;
 
 		Self::update_imbalance(state_changes.delta_imbalance)?;

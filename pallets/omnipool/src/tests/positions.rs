@@ -17,7 +17,7 @@ fn sacrifice_position_should_work_when_position_exists_with_correct_owner() {
 			let position_id = <NextPositionId<Test>>::get();
 			assert_ok!(Omnipool::add_liquidity(Origin::signed(LP1), asset_id, 400 * ONE));
 
-			let lp1_asset_balance = Tokens::free_balance(asset_id, &LP1);
+			let lp1_asset_balance = Tokens::balance(asset_id, &LP1);
 
 			// Act
 			assert_ok!(Omnipool::sacrifice_position(Origin::signed(LP1), position_id));
@@ -41,7 +41,7 @@ fn sacrifice_position_should_work_when_position_exists_with_correct_owner() {
 
 			assert_eq!(Positions::<Test>::get(position_id), None);
 
-			assert_eq!(lp1_asset_balance, Tokens::free_balance(asset_id, &LP1));
+			assert_eq!(lp1_asset_balance, Tokens::balance(asset_id, &LP1));
 
 			assert_eq!(POSITIONS.with(|v| v.borrow().get(&position_id).copied()), None);
 		});

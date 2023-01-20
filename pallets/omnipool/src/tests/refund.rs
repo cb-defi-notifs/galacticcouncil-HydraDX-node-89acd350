@@ -12,8 +12,8 @@ fn refund_refused_asset_should_work_when_asset_not_in_pool() {
 		.with_initial_pool(FixedU128::from_float(0.5), FixedU128::from(1))
 		.build()
 		.execute_with(|| {
-			let lp1_asset_balance = Tokens::free_balance(asset_id, &LP1);
-			let pool_asset_balance = Tokens::free_balance(asset_id, &Omnipool::protocol_account());
+			let lp1_asset_balance = Tokens::balance(asset_id, &LP1);
+			let pool_asset_balance = Tokens::balance(asset_id, &Omnipool::protocol_account());
 
 			// Act
 			assert_ok!(Omnipool::refund_refused_asset(
@@ -24,9 +24,9 @@ fn refund_refused_asset_should_work_when_asset_not_in_pool() {
 			));
 
 			// Assert
-			assert_eq!(Tokens::free_balance(asset_id, &LP1), lp1_asset_balance + 1000 * ONE);
+			assert_eq!(Tokens::balance(asset_id, &LP1), lp1_asset_balance + 1000 * ONE);
 			assert_eq!(
-				Tokens::free_balance(asset_id, &Omnipool::protocol_account()),
+				Tokens::balance(asset_id, &Omnipool::protocol_account()),
 				pool_asset_balance - 1000 * ONE
 			);
 		});
@@ -42,16 +42,16 @@ fn refund_refused_asset_should_work_when_refund_partial_amount() {
 		.with_initial_pool(FixedU128::from_float(0.5), FixedU128::from(1))
 		.build()
 		.execute_with(|| {
-			let lp1_asset_balance = Tokens::free_balance(asset_id, &LP1);
-			let pool_asset_balance = Tokens::free_balance(asset_id, &Omnipool::protocol_account());
+			let lp1_asset_balance = Tokens::balance(asset_id, &LP1);
+			let pool_asset_balance = Tokens::balance(asset_id, &Omnipool::protocol_account());
 
 			// Act
 			assert_ok!(Omnipool::refund_refused_asset(Origin::root(), asset_id, 500 * ONE, LP1));
 
 			// Assert
-			assert_eq!(Tokens::free_balance(asset_id, &LP1), lp1_asset_balance + 500 * ONE);
+			assert_eq!(Tokens::balance(asset_id, &LP1), lp1_asset_balance + 500 * ONE);
 			assert_eq!(
-				Tokens::free_balance(asset_id, &Omnipool::protocol_account()),
+				Tokens::balance(asset_id, &Omnipool::protocol_account()),
 				pool_asset_balance - 500 * ONE
 			);
 		});
