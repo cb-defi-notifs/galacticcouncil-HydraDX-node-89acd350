@@ -52,6 +52,7 @@ frame-benchmarking = { git = "https://github.com/paritytech/substrate", branch =
 orml-tokens = { git = "https://github.com/open-web3-stack/open-runtime-module-library", branch = "polkadot-v0.9.29", default-features = false }
 proptest = "1.0.0"
 pretty_assertions = "1.2.1"
+amm-simulator = { git = "https://github.com/galacticcouncil/warehouse", rev = "ef01f0c5395d48b8c6a6239f985a7119d9b5cdc4", default-features = false }
 
 [features]
 default = ["std"]

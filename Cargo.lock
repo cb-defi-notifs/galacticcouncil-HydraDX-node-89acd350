@@ -89,6 +89,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fbf688625d06217d5b1bb0ea9d9c44a1635fd0ee3534466388d18203174f4d11"
 
 [[package]]
+name = "amm-simulator"
+version = "0.1.0"
+source = "git+https://github.com/galacticcouncil/warehouse?rev=ef01f0c5395d48b8c6a6239f985a7119d9b5cdc4#ef01f0c5395d48b8c6a6239f985a7119d9b5cdc4"
+dependencies = [
+ "proptest",
+ "sp-arithmetic",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6151,6 +6160,7 @@ dependencies = [
 name = "pallet-omnipool"
 version = "1.4.4"
 dependencies = [
+ "amm-simulator",
  "bitflags",
  "frame-benchmarking",
  "frame-support",

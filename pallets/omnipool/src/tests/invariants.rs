@@ -3,11 +3,142 @@ use crate::{AssetReserveState, FixedU128};
 use frame_support::assert_noop;
 use primitive_types::U256;
 use proptest::prelude::*;
+//use proptest::test_runner::{Config as PropConfig, FileFailurePersistence, TestError, TestRunner};
 
 pub const ONE: Balance = 1_000_000_000_000;
 pub const TOLERANCE: Balance = 1_000_000_000;
 
+use amm_simulator::{decl_amm_sim, Interface, PoolState, PoolType, TradeType, Config as SimConfig};
+use amm_simulator::*;
+
 const BALANCE_RANGE: (Balance, Balance) = (100_000 * ONE, 10_000_000 * ONE);
+
+
+pub struct SomeAmm;
+
+fn sim_config() -> SimConfig{
+    SimConfig{
+        pool_type: PoolType::TwoAssetWith(1, 12),
+        trade_type: TradeType::Any,
+        max_reserve: 1,
+        asset_ids: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        max_trade_ratio: 3,
+    }
+}
+
+impl Interface for SomeAmm {
+    fn execute(state: Vec<PoolState>, asset_in: u32, asset_out: u32, amount: u128) {
+
+		if asset_in == asset_out {
+			return;
+		}
+
+		let lp1: u64 = 100;
+		let seller: u64 = 200;
+
+		let stable_reserve = state[2].reserve_a;
+		let native_reserve = state[0].reserve_a;
+
+		let stable_price = FixedU128::from_rational(state[2].reserve_b, state[2].reserve_a);
+
+		ExtBuilder::default()
+			.with_endowed_accounts(vec![
+				(Omnipool::protocol_account(), DAI, stable_reserve ),
+				(Omnipool::protocol_account(), HDX, native_reserve ),
+				(lp1, 3, state[3].reserve_a),
+				(lp1, 4, state[4].reserve_a),
+				(lp1, 5, state[5].reserve_a),
+				(lp1, 6, state[6].reserve_a),
+				(lp1, 7, state[7].reserve_a),
+				(lp1, 8, state[8].reserve_a),
+				(lp1, 9, state[9].reserve_a),
+				(seller, asset_in, amount),
+			])
+			.with_registered_asset(3)
+			.with_registered_asset(4)
+			.with_registered_asset(5)
+			.with_registered_asset(6)
+			.with_registered_asset(7)
+			.with_registered_asset(8)
+			.with_registered_asset(9)
+			.with_registered_asset(10)
+			.with_initial_pool(
+				stable_price,
+				FixedU128::from(1),
+			)
+			.with_token(3, state[3].price(), lp1, state[3].reserve_a)
+			.with_token(4, state[4].price(), lp1, state[4].reserve_a)
+			.with_token(5, state[5].price(), lp1, state[5].reserve_a)
+			.with_token(6, state[6].price(), lp1, state[6].reserve_a)
+			.with_token(7, state[7].price(), lp1, state[7].reserve_a)
+			.with_token(8, state[8].price(), lp1, state[8].reserve_a)
+			.with_token(9, state[9].price(), lp1, state[9].reserve_a)
+			.with_max_in_ratio(1)
+			.build()
+			.execute_with(|| {
+				let old_state_200 = Omnipool::load_asset_state(asset_in).unwrap();
+				let old_state_300 = Omnipool::load_asset_state(asset_out).unwrap();
+				let old_state_hdx = Omnipool::load_asset_state(HDX).unwrap();
+
+				let old_imbalance = <HubAssetImbalance<Test>>::get();
+
+				let old_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+
+				let old_asset_hub_liquidity = sum_asset_hub_liquidity();
+
+				assert_eq!(old_hub_liquidity, old_asset_hub_liquidity);
+
+				assert_ok!(Omnipool::sell(Origin::signed(seller), asset_in, asset_out, amount, Balance::zero()));
+
+				let new_state_200 = Omnipool::load_asset_state(asset_in).unwrap();
+				let new_state_300 = Omnipool::load_asset_state(asset_out).unwrap();
+				let new_state_hdx = Omnipool::load_asset_state(HDX).unwrap();
+
+				// invariant does not decrease
+				assert_ne!(new_state_200.reserve, old_state_200.reserve);
+				assert_ne!(new_state_300.reserve, old_state_300.reserve);
+
+				assert_asset_invariant(&old_state_200, &new_state_200, FixedU128::from((TOLERANCE,ONE)), "Invariant 200");
+				assert_asset_invariant(&old_state_300, &new_state_300, FixedU128::from((TOLERANCE,ONE)), "Invariant 300");
+
+				// Total hub asset liquidity has not changed
+				let new_hub_liquidity = Tokens::free_balance(LRNA, &Omnipool::protocol_account());
+
+				assert_eq!(old_hub_liquidity, new_hub_liquidity, "Total Hub liquidity has changed!");
+
+				// total quantity of R_i remains unchanged
+				let new_asset_hub_liquidity = sum_asset_hub_liquidity();
+
+				assert_eq!(old_asset_hub_liquidity, new_asset_hub_liquidity, "Assets hub liquidity");
+
+				let new_imbalance = <HubAssetImbalance<Test>>::get();
+
+				// No LRNA lost
+				let delta_q_200 = old_state_200.hub_reserve - new_state_200.hub_reserve;
+				let delta_q_300 = new_state_300.hub_reserve - old_state_300.hub_reserve;
+				let delta_q_hdx = new_state_hdx.hub_reserve - old_state_hdx.hub_reserve;
+				let delta_imbalance= new_imbalance.value - old_imbalance.value; // note: in current implementation: imbalance cannot be positive, let's simply and ignore the sign for now
+
+				let remaining = delta_q_300 - delta_q_200 - delta_q_hdx - delta_imbalance;
+				assert_eq!(remaining, 0u128, "Some LRNA was lost along the way");
+			});
+
+    }
+}
+
+decl_amm_sim!(
+    pub struct AmmSim{
+        Amm = SomeAmm,
+        Config = sim_config(),
+    }
+);
+
+#[test]
+fn test_with_sim() {
+    AmmSim.execute();
+}
+
+
 
 fn asset_reserve() -> impl Strategy<Value = Balance> {
 	BALANCE_RANGE.0..BALANCE_RANGE.1
