@@ -288,7 +288,7 @@ fn buy_for_hub_asset_works() {
 					reserve: 1000000000000000,
 					hub_reserve: 500000000000000,
 					shares: 1000000000000000,
-					protocol_shares: 1000000000000000,
+					protocol_shares: 0,
 					cap: DEFAULT_WEIGHT_CAP,
 					tradable: Tradability::default(),
 				}
@@ -300,7 +300,7 @@ fn buy_for_hub_asset_works() {
 					reserve: 10000000000000000,
 					hub_reserve: 10000000000000000,
 					shares: 10000000000000000,
-					protocol_shares: 10000000000000000,
+					protocol_shares: 0,
 					cap: DEFAULT_WEIGHT_CAP,
 					tradable: Tradability::default(),
 				}
@@ -391,6 +391,140 @@ fn simple_buy_with_fee_works() {
 				Tokens::free_balance(100, &Omnipool::protocol_account()),
 				token_amount + expect_sold_amount
 			);
+		});
+}
+
+#[test]
+fn buy_should_emit_event_with_correct_asset_fee_amount() {
+	ExtBuilder::default()
+		.with_endowed_accounts(vec![
+			(Omnipool::protocol_account(), DAI, 1000 * ONE),
+			(Omnipool::protocol_account(), HDX, NATIVE_AMOUNT),
+			(LP2, 100, 2000 * ONE),
+			(LP3, 200, 2000 * ONE),
+			(LP1, 100, 1000 * ONE),
+		])
+		.with_registered_asset(100)
+		.with_registered_asset(200)
+		.with_asset_fee(Permill::from_percent(10))
+		.with_initial_pool(FixedU128::from(1), FixedU128::from(1))
+		.with_token(100, FixedU128::from(1), LP2, 2000 * ONE)
+		.with_token(200, FixedU128::from(1), LP3, 2000 * ONE)
+		.build()
+		.execute_with(|| {
+			let buy_amount = 50 * ONE;
+			let max_limit = 100 * ONE;
+			let expected_sold_amount = 58_823_529_411_766;
+
+			assert_ok!(Omnipool::buy(
+				RuntimeOrigin::signed(LP1),
+				200,
+				100,
+				buy_amount,
+				max_limit
+			));
+
+			expect_events(vec![Event::BuyExecuted {
+				who: LP1,
+				asset_in: 100,
+				asset_out: 200,
+				amount_in: expected_sold_amount,
+				amount_out: buy_amount,
+				hub_amount_in: 57142857142858,
+				hub_amount_out: 57142857142858,
+				asset_fee_amount: 5_555_555_555_556,
+				protocol_fee_amount: 0,
+			}
+			.into()]);
+		});
+}
+
+#[test]
+fn buy_should_emit_event_with_correct_protocol_fee_amount() {
+	ExtBuilder::default()
+		.with_endowed_accounts(vec![
+			(Omnipool::protocol_account(), DAI, 1000 * ONE),
+			(Omnipool::protocol_account(), HDX, NATIVE_AMOUNT),
+			(LP2, 100, 2000 * ONE),
+			(LP3, 200, 2000 * ONE),
+			(LP1, 100, 1000 * ONE),
+		])
+		.with_registered_asset(100)
+		.with_registered_asset(200)
+		.with_protocol_fee(Permill::from_percent(10))
+		.with_initial_pool(FixedU128::from(1), FixedU128::from(1))
+		.with_token(100, FixedU128::from(1), LP2, 2000 * ONE)
+		.with_token(200, FixedU128::from(1), LP3, 2000 * ONE)
+		.build()
+		.execute_with(|| {
+			let buy_amount = 50 * ONE;
+			let max_limit = 100 * ONE;
+			let expected_sold_amount = 58_651_026_392_962;
+
+			assert_ok!(Omnipool::buy(
+				RuntimeOrigin::signed(LP1),
+				200,
+				100,
+				buy_amount,
+				max_limit
+			));
+
+			expect_events(vec![Event::BuyExecuted {
+				who: LP1,
+				asset_in: 100,
+				asset_out: 200,
+				amount_in: expected_sold_amount,
+				amount_out: buy_amount,
+				hub_amount_in: 56980056980057,
+				hub_amount_out: 51282051282052,
+				asset_fee_amount: 0,
+				protocol_fee_amount: 5698005698005,
+			}
+			.into()]);
+		});
+}
+
+#[test]
+fn sell_should_get_same_amount() {
+	ExtBuilder::default()
+		.with_endowed_accounts(vec![
+			(Omnipool::protocol_account(), DAI, 1000 * ONE),
+			(Omnipool::protocol_account(), HDX, NATIVE_AMOUNT),
+			(LP2, 100, 2000 * ONE),
+			(LP3, 200, 2000 * ONE),
+			(LP1, 100, 1000 * ONE),
+		])
+		.with_registered_asset(100)
+		.with_registered_asset(200)
+		.with_asset_fee(Permill::from_percent(10))
+		.with_initial_pool(FixedU128::from(1), FixedU128::from(1))
+		.with_token(100, FixedU128::from(1), LP2, 2000 * ONE)
+		.with_token(200, FixedU128::from(1), LP3, 2000 * ONE)
+		.build()
+		.execute_with(|| {
+			let buy_amount = 50 * ONE;
+			let expected_sold_amount = 58_823_529_411_766;
+
+			assert_ok!(Omnipool::sell(
+				RuntimeOrigin::signed(LP1),
+				100,
+				200,
+				expected_sold_amount,
+				0
+			));
+
+			expect_events(vec![Event::SellExecuted {
+				who: LP1,
+				asset_in: 100,
+				asset_out: 200,
+				amount_in: expected_sold_amount,
+				amount_out: buy_amount,
+				hub_amount_in: 57142857142858,
+				hub_amount_out: 57142857142858,
+				asset_fee_amount: 5555555555556,
+				protocol_fee_amount: 0,
+			}
+			.into()]);
 		});
 }
 
@@ -595,7 +729,7 @@ fn buy_should_work_when_trading_native_asset() {
 					reserve: 10046645138141372,
 					hub_reserve: 9962857142857142,
 					shares: 10000 * ONE,
-					protocol_shares: 10000000000000000,
+					protocol_shares: 0,
 					cap: DEFAULT_WEIGHT_CAP,
 					tradable: Tradability::default(),
 				}

@@ -1,3 +1,5 @@
+#![allow(clippy::bad_bit_mask)]
+
 use super::*;
 use codec::MaxEncodedLen;
 use frame_support::pallet_prelude::*;
@@ -31,6 +33,12 @@ bitflags::bitflags! {
 impl Default for Tradability {
 	fn default() -> Self {
 		Tradability::SELL | Tradability::BUY | Tradability::ADD_LIQUIDITY | Tradability::REMOVE_LIQUIDITY
+	}
+}
+
+impl Tradability {
+	pub(crate) fn is_safe_withdrawal(&self) -> bool {
+		*self == Tradability::ADD_LIQUIDITY | Tradability::REMOVE_LIQUIDITY || *self == Tradability::REMOVE_LIQUIDITY
 	}
 }
 
@@ -206,7 +214,7 @@ impl<Balance: CheckedAdd + CheckedSub + PartialOrd + Copy> Sub<Balance> for Simp
 }
 
 /// Asset state representation including asset pool reserve.
-#[derive(Clone, Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct AssetReserveState<Balance> {
 	/// Quantity of asset in omnipool
 	pub reserve: Balance,

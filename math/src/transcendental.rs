@@ -107,9 +107,8 @@ where
 	if operand.is_zero() {
 		return Ok(D::one());
 	}
-	if operand == S::one() {
-		//TODO: make this as const somewhere
-		let e = S::from_str("2.718281828459045235360287471352662497757").map_err(|_| ())?;
+	if operand == S::one() && !neg {
+		let e = S::from_num(fixed::consts::E);
 		return Ok(D::from(e));
 	}
 
@@ -282,9 +281,10 @@ where
 #[cfg(test)]
 mod tests {
 	use crate::fraction;
-	use crate::types::{FixedBalance, Fraction};
+	use crate::types::Fraction;
 	use core::str::FromStr;
 	use fixed::traits::LossyInto;
+	use fixed::types::U32F96;
 	use fixed::types::U64F64;
 
 	use super::*;
@@ -294,7 +294,7 @@ mod tests {
 		type S = U64F64;
 		type D = U64F64;
 
-		let e = S::from_str("2.718281828459045235360287471352662497757").unwrap();
+		let e = S::from_num(fixed::consts::E);
 
 		let zero = S::from_num(0);
 		let one = S::one();
@@ -309,6 +309,10 @@ mod tests {
 		assert_eq!(
 			exp::<S, D>(two, true),
 			Ok(D::from_str("0.13533528323661269186").unwrap())
+		);
+		assert_eq!(
+			exp::<S, D>(one, true),
+			Ok(D::from_str("0.367879441171442321595523770161460867445").unwrap()),
 		);
 	}
 
@@ -404,8 +408,8 @@ mod tests {
 
 	#[test]
 	fn pow_works() {
-		type S = FixedBalance;
-		type D = FixedBalance;
+		type S = U32F96;
+		type D = U32F96;
 		let zero = S::from_num(0);
 		let one = S::one();
 		let two = S::from_num(2);
@@ -428,12 +432,12 @@ mod tests {
 
 		assert_eq!(
 			pow(S::from_num(22.1234), S::from_num(2.1)),
-			Ok(D::from_num(667.096912176457))
+			Ok(D::from_str("667.0969121771803182631954923946").unwrap())
 		);
 
 		assert_eq!(
 			pow(S::from_num(0.986069911074), S::from_num(1.541748732743)),
-			Ok(D::from_num(0.978604514488))
+			Ok(D::from_str("0.97860451447489653592682845716").unwrap())
 		);
 	}
 }

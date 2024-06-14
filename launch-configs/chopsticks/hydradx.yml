@@ -1,8 +1,8 @@
-endpoint: wss://hydradx-rpc.dwellir.com
+endpoint: wss://rpc.hydradx.cloud
 mock-signature-host: true
 #block: 1872160
 db: ./db.sqlite
-wasm-override: ./hydradx_runtime.compact.compressed.wasm
+wasm-override: target/release/hydradx_runtime.compact.compressed.wasm
 
 import-storage:
   System:
@@ -10,14 +10,35 @@ import-storage:
       -
         -
           - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-        - data:
+        - providers: 1
+          data:
             free: 1000000000000000
   Tokens:
     Accounts:
       -
         -
           - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-          - 2
+          - 18 # DAI
+        - free: '100000000000000000000'
+      -
+        -
+          - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+          - 10 # USDT
+        - free: '1000000000000'
+      -
+        -
+          - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+          - 22 # USDC
+        - free: '1000000000000'
+      -
+        -
+          - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+          - 5  # DOT
+        - free: '100000000000000000000'
+      -
+        -
+          - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+          - 20 # WETH
         - free: '100000000000000000000'
   Council:
     Members: [5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY]

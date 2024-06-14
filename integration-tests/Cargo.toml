@@ -1,6 +1,6 @@
 [package]
 name = "runtime-integration-tests"
-version = "1.7.19"
+version = "1.21.8"
 description = "Integration tests"
 authors = ["GalacticCouncil"]
 edition = "2021"
@@ -9,6 +9,7 @@ license = "Apache 2.0"
 repository = "https://github.com/galacticcouncil/HydraDX-node"
 
 [dependencies]
+hex-literal = { workspace = true }
 frame-remote-externalities = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 scraper = { workspace = true }
@@ -18,11 +19,12 @@ hydradx-adapters = { workspace = true }
 pallet-omnipool = { workspace = true }
 pallet-circuit-breaker = { workspace = true }
 pallet-omnipool-liquidity-mining = { workspace = true }
-
-# Warehouse dependencies
+pallet-bonds = { workspace = true }
+pallet-stableswap = { workspace = true }
+pallet-referrals = { workspace = true }
 pallet-asset-registry = { workspace = true }
 hydradx-traits = { workspace = true }
-pallet-transaction-multi-payment = { workspace = true }
+pallet-transaction-multi-payment = { workspace = true, features = ["evm"] }
 pallet-currencies = { workspace = true }
 pallet-duster = { workspace = true }
 pallet-ema-oracle = { workspace = true }
@@ -32,12 +34,19 @@ pallet-relaychain-info = { workspace = true }
 pallet-route-executor = { workspace = true}
 pallet-dca = { workspace = true}
 pallet-dynamic-fees = { workspace = true }
+pallet-dynamic-evm-fee = { workspace = true }
+pallet-staking = { workspace = true}
+pallet-lbp = { workspace = true}
+pallet-xyk = { workspace = true}
+pallet-evm-accounts = { workspace = true}
 
 pallet-treasury = { workspace = true }
 pallet-democracy = { workspace = true }
 pallet-scheduler = { workspace = true }
 pallet-elections-phragmen = { workspace = true }
 pallet-tips = { workspace = true }
+pallet-xyk-liquidity-mining = { workspace = true }
+pallet-transaction-pause = { workspace = true }
 
 # collator support
 pallet-collator-selection = { workspace = true }
@@ -54,6 +63,13 @@ orml-xtokens = { workspace = true }
 orml-xcm-support = { workspace = true }
 orml-unknown-tokens = { workspace = true }
 
+precompile-utils = { workspace = true }
+pallet-evm-precompile-call-permit = { workspace = true }
+
+# Evm
+pallet-evm = { workspace = true }
+fp-evm = { workspace = true }
+fp-rpc = { workspace = true }
 # Cumulus dependencies
 cumulus-pallet-aura-ext = { workspace = true }
 cumulus-pallet-parachain-system = { workspace = true }
@@ -85,12 +101,12 @@ pallet-aura = { workspace = true }
 pallet-balances = { workspace = true }
 pallet-collective = { workspace = true }
 pallet-session = { workspace = true }
-pallet-sudo = { workspace = true }
 pallet-timestamp = { workspace = true }
 pallet-transaction-payment = { workspace = true }
 pallet-transaction-payment-rpc-runtime-api = { workspace = true }
 pallet-utility = { workspace = true }
 pallet-uniques = { workspace = true }
+pallet-im-online = { workspace = true }
 sp-api = { workspace = true }
 sp-block-builder = { workspace = true }
 sp-consensus-aura = { workspace = true }
@@ -106,16 +122,22 @@ sp-version = { workspace = true }
 sp-staking = { workspace = true }
 sp-trie = { workspace = true }
 sp-io = { workspace = true }
+sp-consensus-babe = { workspace = true }
+sp-authority-discovery = { workspace = true }
+sc-consensus-grandpa = { workspace = true }
 
 polkadot-primitives = { workspace = true }
+polkadot-service = { workspace = true, features = ["full-node"] }
 polkadot-runtime-parachains = { workspace = true }
 polkadot-runtime = { workspace = true }
 
 [dev-dependencies]
-hex-literal = "0.4.1"
 pretty_assertions = "1.2.1"
 pallet-relaychain-info = { workspace = true }
-xcm-emulator = { git = "https://github.com/shaunxw/xcm-simulator", rev = "754f3b90ecc65af735a6c9a2e1792c5253926ff6" }
+xcm-emulator = { workspace = true }
+test-utils = { workspace = true }
+libsecp256k1 = { workspace = true }
+
 
 [features]
 default = ["std"]
@@ -146,16 +168,18 @@ std = [
     "pallet-balances/std",
     "pallet-elections-phragmen/std",
     "pallet-session/std",
-    "pallet-sudo/std",
     "pallet-timestamp/std",
     "pallet-transaction-payment/std",
     "pallet-transaction-multi-payment/std",
     "pallet-transaction-payment-rpc-runtime-api/std",
     "pallet-utility/std",
+    "pallet-im-online/std",
     "pallet-currencies/std",
     "sp-api/std",
+    "sp-authority-discovery/std",
     "sp-block-builder/std",
     "sp-consensus-aura/std",
+    "sp-consensus-babe/std",
     "sp-core/std",
     "sp-io/std",
     "sp-inherents/std",
@@ -178,4 +202,18 @@ std = [
     "pallet-relaychain-info/std",
     "polkadot-runtime/std",
     "hydradx-runtime/std",
+    "pallet-staking/std",
+    "scraper/std",
+    "pallet-dynamic-evm-fee/std",
+    "precompile-utils/std",
+    "pallet-transaction-pause/std",
+]
+
+# we don't include integration tests when benchmarking feature is enabled
+runtime-benchmarks = [
+    "hydradx-runtime/runtime-benchmarks",
+    "polkadot-runtime/runtime-benchmarks",
+]
+try-runtime = [
+    "polkadot-runtime/try-runtime",
 ]

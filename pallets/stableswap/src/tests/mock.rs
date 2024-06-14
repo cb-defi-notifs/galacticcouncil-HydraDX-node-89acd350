@@ -16,12 +16,13 @@
 // limitations under the License.
 
 //! Test environment for Assets pallet.
+#![allow(clippy::type_complexity)]
 
+use core::ops::RangeInclusive;
+use sp_runtime::DispatchResult;
 use sp_std::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
-
-use core::ops::RangeInclusive;
 use std::num::NonZeroU16;
 
 use crate as pallet_stableswap;
@@ -29,7 +30,8 @@ use crate as pallet_stableswap;
 use crate::Config;
 
 use frame_support::assert_ok;
-use frame_support::traits::{Contains, Everything, GenesisBuild};
+use frame_support::traits::{Contains, Everything};
+use frame_support::weights::Weight;
 use frame_support::{
 	construct_runtime, parameter_types,
 	traits::{ConstU32, ConstU64},
@@ -39,12 +41,10 @@ use orml_traits::parameter_type_with_key;
 pub use orml_traits::MultiCurrency;
 use sp_core::H256;
 use sp_runtime::{
-	testing::Header,
 	traits::{BlakeTwo256, IdentityLookup},
-	DispatchError,
+	BuildStorage, DispatchError,
 };
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
 type Block = frame_system::mocking::MockBlock<Test>;
 
 pub type Balance = u128;
@@ -67,21 +67,20 @@ macro_rules! assert_balance {
 }
 
 thread_local! {
-	pub static REGISTERED_ASSETS: RefCell<HashMap<AssetId, u32>> = RefCell::new(HashMap::default());
+	pub static REGISTERED_ASSETS: RefCell<HashMap<AssetId, (u32,u8)>> = RefCell::new(HashMap::default());
 	pub static ASSET_IDENTS: RefCell<HashMap<Vec<u8>, u32>> = RefCell::new(HashMap::default());
 	pub static POOL_IDS: RefCell<Vec<AssetId>> = RefCell::new(Vec::new());
 	pub static DUSTER_WHITELIST: RefCell<Vec<AccountId>> = RefCell::new(Vec::new());
+	pub static LAST_LIQUDITY_CHANGE_HOOK: RefCell<Option<(AssetId, PoolState<AssetId>)>> = RefCell::new(None);
+	pub static LAST_TRADE_HOOK: RefCell<Option<(AssetId, AssetId, AssetId, PoolState<AssetId>)>> = RefCell::new(None);
 }
 
 construct_runtime!(
-	pub enum Test where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic,
+	pub enum Test
 	{
-		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
-		Tokens: orml_tokens::{Pallet, Event<T>},
-		Stableswap: pallet_stableswap::{Pallet, Call, Storage, Event<T>},
+		System: frame_system,
+		Tokens: orml_tokens,
+		Stableswap: pallet_stableswap,
 	}
 );
 
@@ -91,13 +90,12 @@ impl frame_system::Config for Test {
 	type BlockLength = ();
 	type RuntimeOrigin = RuntimeOrigin;
 	type RuntimeCall = RuntimeCall;
-	type Index = u64;
-	type BlockNumber = u64;
+	type Nonce = u64;
+	type Block = Block;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = AccountId;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
 	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = ConstU64<250>;
 	type DbWeight = ();
@@ -135,7 +133,7 @@ impl orml_tokens::Config for Test {
 parameter_types! {
 	pub const HDXAssetId: AssetId = HDX;
 	pub const DAIAssetId: AssetId = DAI;
-	pub const MinimumLiquidity: Balance = 1000;
+	pub const MinimumLiquidity: Balance = 1_000_000;
 	pub const MinimumTradingLimit: Balance = 1000;
 	pub AmplificationRange: RangeInclusive<NonZeroU16> = RangeInclusive::new(NonZeroU16::new(2).unwrap(), NonZeroU16::new(10_000).unwrap());
 }
@@ -173,7 +171,7 @@ impl Config for Test {
 	type AssetId = AssetId;
 	type Currency = Tokens;
 	type ShareAccountId = AccountIdConstructor;
-	type AssetRegistry = DummyRegistry<Test>;
+	type AssetInspection = DummyRegistry;
 	type AuthorityOrigin = EnsureRoot<AccountId>;
 	type MinPoolLiquidity = MinimumLiquidity;
 	type AmplificationRange = AmplificationRange;
@@ -181,16 +179,19 @@ impl Config for Test {
 	type WeightInfo = ();
 	type BlockNumberProvider = System;
 	type DustAccountHandler = Whitelist;
+	type Hooks = DummyHookAdapter;
+	#[cfg(feature = "runtime-benchmarks")]
+	type BenchmarkHelper = DummyRegistry;
 }
 
 pub struct InitialLiquidity {
 	pub(crate) account: AccountId,
-	pub(crate) assets: Vec<AssetLiquidity<AssetId>>,
+	pub(crate) assets: Vec<AssetAmount<AssetId>>,
 }
 
 pub struct ExtBuilder {
 	endowed_accounts: Vec<(AccountId, AssetId, Balance)>,
-	registered_assets: Vec<(Vec<u8>, AssetId)>,
+	registered_assets: Vec<(Vec<u8>, AssetId, u8)>,
 	created_pools: Vec<(AccountId, PoolInfo<AssetId, u64>, InitialLiquidity)>,
 }
 
@@ -222,8 +223,15 @@ impl ExtBuilder {
 		self
 	}
 
-	pub fn with_registered_asset(mut self, name: Vec<u8>, asset: AssetId) -> Self {
-		self.registered_assets.push((name, asset));
+	pub fn with_registered_asset(mut self, name: Vec<u8>, asset: AssetId, decimals: u8) -> Self {
+		self.registered_assets.push((name, asset, decimals));
+		self
+	}
+
+	pub fn with_registered_assets(mut self, assets: Vec<(Vec<u8>, AssetId, u8)>) -> Self {
+		for (name, asset, decimals) in assets.into_iter() {
+			self.registered_assets.push((name, asset, decimals));
+		}
 		self
 	}
 
@@ -238,14 +246,15 @@ impl ExtBuilder {
 	}
 
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default().build_storage::<Test>().unwrap();
+		let mut t = frame_system::GenesisConfig::<Test>::default().build_storage().unwrap();
 
-		let mut all_assets: Vec<(Vec<u8>, AssetId)> = vec![(b"DAI".to_vec(), DAI), (b"HDX".to_vec(), HDX)];
+		let mut all_assets: Vec<(Vec<u8>, AssetId, u8)> =
+			vec![(b"DAI".to_vec(), DAI, 12u8), (b"HDX".to_vec(), HDX, 12u8)];
 		all_assets.extend(self.registered_assets);
 
-		for (name, asset) in all_assets.into_iter() {
+		for (name, asset, decimals) in all_assets.into_iter() {
 			REGISTERED_ASSETS.with(|v| {
-				v.borrow_mut().insert(asset, asset);
+				v.borrow_mut().insert(asset, (asset, decimals));
 			});
 
 			ASSET_IDENTS.with(|v| {
@@ -268,7 +277,7 @@ impl ExtBuilder {
 			for (_who, pool, initial_liquid) in self.created_pools {
 				let pool_id = retrieve_current_asset_id();
 				REGISTERED_ASSETS.with(|v| {
-					v.borrow_mut().insert(pool_id, pool_id);
+					v.borrow_mut().insert(pool_id, (pool_id, 12));
 				});
 				ASSET_IDENTS.with(|v| {
 					v.borrow_mut().insert(b"main".to_vec(), pool_id);
@@ -279,8 +288,7 @@ impl ExtBuilder {
 					pool_id,
 					pool.assets.clone().into(),
 					pool.initial_amplification.get(),
-					pool.trade_fee,
-					pool.withdraw_fee,
+					pool.fee,
 				));
 				POOL_IDS.with(|v| {
 					v.borrow_mut().push(pool_id);
@@ -300,58 +308,62 @@ impl ExtBuilder {
 	}
 }
 
-use crate::types::{AssetLiquidity, PoolInfo};
+#[cfg(feature = "runtime-benchmarks")]
+use crate::types::BenchmarkHelper;
+use crate::types::{AssetAmount, PoolInfo, PoolState, StableswapHooks};
 use hydradx_traits::pools::DustRemovalAccountWhitelist;
-use hydradx_traits::{AccountIdFor, Registry, ShareTokenRegistry};
+use hydradx_traits::{AccountIdFor, Inspect};
 use sp_runtime::traits::Zero;
 
-pub struct DummyRegistry<T>(sp_std::marker::PhantomData<T>);
+pub struct DummyRegistry;
 
-impl<T: Config> Registry<T::AssetId, Vec<u8>, Balance, DispatchError> for DummyRegistry<T>
-where
-	T::AssetId: Into<AssetId> + From<u32>,
-{
-	fn exists(asset_id: T::AssetId) -> bool {
-		let asset = REGISTERED_ASSETS.with(|v| v.borrow().get(&(asset_id.into())).copied());
-		matches!(asset, Some(_))
+impl Inspect for DummyRegistry {
+	type AssetId = AssetId;
+	type Location = u8;
+
+	fn exists(asset_id: AssetId) -> bool {
+		let asset = REGISTERED_ASSETS.with(|v| v.borrow().get(&asset_id).copied());
+		asset.is_some()
 	}
 
-	fn retrieve_asset(name: &Vec<u8>) -> Result<T::AssetId, DispatchError> {
-		let asset_id = ASSET_IDENTS.with(|v| v.borrow().get(name).copied());
-		if let Some(id) = asset_id {
-			Ok(id.into())
-		} else {
-			Err(pallet_stableswap::Error::<Test>::AssetNotRegistered.into())
-		}
+	fn decimals(asset_id: AssetId) -> Option<u8> {
+		let asset = REGISTERED_ASSETS.with(|v| v.borrow().get(&asset_id).copied())?;
+		Some(asset.1)
 	}
 
-	fn create_asset(name: &Vec<u8>, _existential_deposit: Balance) -> Result<T::AssetId, DispatchError> {
-		let assigned = REGISTERED_ASSETS.with(|v| {
-			let l = v.borrow().len();
-			v.borrow_mut().insert(l as u32, l as u32);
-			l as u32
-		});
+	fn is_sufficient(_id: Self::AssetId) -> bool {
+		unimplemented!()
+	}
 
-		ASSET_IDENTS.with(|v| v.borrow_mut().insert(name.clone(), assigned));
+	fn asset_type(_id: Self::AssetId) -> Option<hydradx_traits::AssetKind> {
+		unimplemented!()
+	}
 
-		Ok(T::AssetId::from(assigned))
+	fn is_banned(_id: Self::AssetId) -> bool {
+		unimplemented!()
+	}
+
+	fn asset_name(_id: Self::AssetId) -> Option<Vec<u8>> {
+		unimplemented!()
+	}
+
+	fn asset_symbol(_id: Self::AssetId) -> Option<Vec<u8>> {
+		unimplemented!()
+	}
+
+	fn existential_deposit(_id: Self::AssetId) -> Option<u128> {
+		unimplemented!()
 	}
 }
 
-impl<T: Config> ShareTokenRegistry<T::AssetId, Vec<u8>, Balance, DispatchError> for DummyRegistry<T>
-where
-	T::AssetId: Into<AssetId> + From<u32>,
-{
-	fn retrieve_shared_asset(name: &Vec<u8>, _assets: &[T::AssetId]) -> Result<T::AssetId, DispatchError> {
-		Self::retrieve_asset(name)
-	}
+#[cfg(feature = "runtime-benchmarks")]
+impl BenchmarkHelper<AssetId> for DummyRegistry {
+	fn register_asset(asset_id: AssetId, decimals: u8) -> DispatchResult {
+		REGISTERED_ASSETS.with(|v| {
+			v.borrow_mut().insert(asset_id, (asset_id, decimals));
+		});
 
-	fn create_shared_asset(
-		name: &Vec<u8>,
-		_assets: &[T::AssetId],
-		existential_deposit: Balance,
-	) -> Result<T::AssetId, DispatchError> {
-		Self::get_or_create_asset(name.clone(), existential_deposit)
+		Ok(())
 	}
 }
 
@@ -386,4 +398,40 @@ pub(crate) fn retrieve_current_asset_id() -> AssetId {
 
 pub(crate) fn get_pool_id_at(idx: usize) -> AssetId {
 	POOL_IDS.with(|v| v.borrow()[idx])
+}
+
+pub struct DummyHookAdapter;
+
+impl StableswapHooks<AssetId> for DummyHookAdapter {
+	fn on_liquidity_changed(pool_id: AssetId, state: PoolState<AssetId>) -> DispatchResult {
+		LAST_LIQUDITY_CHANGE_HOOK.with(|v| {
+			*v.borrow_mut() = Some((pool_id, state));
+		});
+
+		Ok(())
+	}
+
+	fn on_trade(pool_id: AssetId, asset_in: AssetId, asset_out: AssetId, state: PoolState<AssetId>) -> DispatchResult {
+		LAST_TRADE_HOOK.with(|v| {
+			*v.borrow_mut() = Some((pool_id, asset_in, asset_out, state));
+		});
+
+		Ok(())
+	}
+
+	fn on_liquidity_changed_weight(_n: usize) -> Weight {
+		Weight::zero()
+	}
+
+	fn on_trade_weight(_n: usize) -> Weight {
+		Weight::zero()
+	}
+}
+
+pub(crate) fn last_liquidity_changed_hook_state() -> Option<(AssetId, PoolState<AssetId>)> {
+	LAST_LIQUDITY_CHANGE_HOOK.with(|v| v.borrow().clone())
+}
+
+pub(crate) fn last_trade_hook_state() -> Option<(AssetId, AssetId, AssetId, PoolState<AssetId>)> {
+	LAST_TRADE_HOOK.with(|v| v.borrow().clone())
 }

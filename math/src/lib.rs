@@ -23,8 +23,10 @@ pub mod lbp;
 pub mod liquidity_mining;
 pub mod omnipool;
 pub mod omnipool_subpools;
+pub mod rate_limiter;
 pub mod ratio;
 pub mod stableswap;
+pub mod staking;
 pub mod support;
 #[cfg(test)]
 pub mod test_utils;

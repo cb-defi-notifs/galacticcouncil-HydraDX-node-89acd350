@@ -68,11 +68,11 @@
 
 use frame_support::pallet_prelude::*;
 use frame_support::sp_runtime::traits::{BlockNumberProvider, One, Zero};
+use frame_support::traits::Contains;
+use frame_system::pallet_prelude::BlockNumberFor;
 use hydradx_traits::{
 	AggregatedEntry, AggregatedOracle, AggregatedPriceOracle, Liquidity, OnCreatePoolHandler,
-	OnLiquidityChangedHandler, OnTradeHandler,
-	OraclePeriod::{self, *},
-	Volume,
+	OnLiquidityChangedHandler, OnTradeHandler, OraclePeriod::*, Volume,
 };
 use sp_arithmetic::traits::Saturating;
 use sp_std::marker::PhantomData;
@@ -98,12 +98,23 @@ const LOG_TARGET: &str = "runtime::ema-oracle";
 // Re-export pallet items so that they can be accessed from the crate namespace.
 pub use pallet::*;
 
+#[cfg(feature = "runtime-benchmarks")]
+pub trait BenchmarkHelper<AssetId> {
+	fn register_asset(asset_id: AssetId) -> DispatchResult;
+}
+#[cfg(feature = "runtime-benchmarks")]
+impl BenchmarkHelper<AssetId> for () {
+	fn register_asset(_asset_id: AssetId) -> DispatchResult {
+		Ok(())
+	}
+}
+
 #[allow(clippy::type_complexity)]
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use frame_support::BoundedBTreeMap;
-	use frame_system::pallet_prelude::BlockNumberFor;
+	use frame_support::{BoundedBTreeMap, BoundedBTreeSet};
+	use frame_system::pallet_prelude::{BlockNumberFor, OriginFor};
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
@@ -115,36 +126,52 @@ pub mod pallet {
 		/// Weight information for the extrinsics.
 		type WeightInfo: WeightInfo;
 
+		/// Origin that can enable oracle for assets that would be rejected by `OracleWhitelist` otherwise.
+		type AuthorityOrigin: EnsureOrigin<Self::RuntimeOrigin>;
+
 		/// Provider for the current block number.
-		type BlockNumberProvider: BlockNumberProvider<BlockNumber = Self::BlockNumber>;
+		type BlockNumberProvider: BlockNumberProvider<BlockNumber = BlockNumberFor<Self>>;
 
 		/// The periods supported by the pallet. I.e. which oracles to track.
 		type SupportedPeriods: Get<BoundedVec<OraclePeriod, ConstU32<MAX_PERIODS>>>;
 
+		/// Whitelist determining what oracles are tracked by the pallet.
+		type OracleWhitelist: Contains<(Source, AssetId, AssetId)>;
+
 		/// Maximum number of unique oracle entries expected in one block.
 		#[pallet::constant]
 		type MaxUniqueEntries: Get<u32>;
+
+		#[cfg(feature = "runtime-benchmarks")]
+		type BenchmarkHelper: BenchmarkHelper<AssetId>;
 	}
 
 	#[pallet::error]
 	pub enum Error<T> {
 		TooManyUniqueEntries,
 		OnTradeValueZero,
+		OracleNotFound,
 	}
 
 	#[pallet::event]
-	pub enum Event<T: Config> {}
+	#[pallet::generate_deposit(pub(crate) fn deposit_event)]
+	pub enum Event<T: Config> {
+		/// Oracle was added to the whitelist.
+		AddedToWhitelist { source: Source, assets: (AssetId, AssetId) },
+		/// Oracle was removed from the whitelist.
+		RemovedFromWhitelist { source: Source, assets: (AssetId, AssetId) },
+	}
 
 	/// Accumulator for oracle data in current block that will be recorded at the end of the block.
 	#[pallet::storage]
 	#[pallet::getter(fn accumulator)]
 	pub type Accumulator<T: Config> = StorageValue<
 		_,
-		BoundedBTreeMap<(Source, (AssetId, AssetId)), OracleEntry<T::BlockNumber>, T::MaxUniqueEntries>,
+		BoundedBTreeMap<(Source, (AssetId, AssetId)), OracleEntry<BlockNumberFor<T>>, T::MaxUniqueEntries>,
 		ValueQuery,
 	>;
 
-	/// Orace storage keyed by data source, involved asset ids and the period length of the oracle.
+	/// Oracle storage keyed by data source, involved asset ids and the period length of the oracle.
 	///
 	/// Stores the data entry as well as the block number when the oracle was first initialized.
 	#[pallet::storage]
@@ -156,26 +183,33 @@ pub mod pallet {
 			NMapKey<Twox64Concat, (AssetId, AssetId)>,
 			NMapKey<Twox64Concat, OraclePeriod>,
 		),
-		(OracleEntry<T::BlockNumber>, T::BlockNumber),
+		(OracleEntry<BlockNumberFor<T>>, BlockNumberFor<T>),
 		OptionQuery,
 	>;
 
+	/// Assets that are whitelisted and tracked by the pallet.
+	#[pallet::storage]
+	pub type WhitelistedAssets<T: Config> =
+		StorageValue<_, BoundedBTreeSet<(Source, (AssetId, AssetId)), T::MaxUniqueEntries>, ValueQuery>;
+
 	#[pallet::genesis_config]
-	#[derive(Default)]
-	pub struct GenesisConfig {
+	#[derive(frame_support::DefaultNoBound)]
+	pub struct GenesisConfig<T: Config> {
 		pub initial_data: Vec<(Source, (AssetId, AssetId), Price, Liquidity<Balance>)>,
+		#[serde(skip)]
+		pub _marker: PhantomData<T>,
 	}
 
 	#[pallet::genesis_build]
-	impl<T: Config> GenesisBuild<T> for GenesisConfig {
+	impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
 		fn build(&self) {
 			for &(source, (asset_a, asset_b), price, liquidity) in self.initial_data.iter() {
-				let entry: OracleEntry<T::BlockNumber> = {
+				let entry: OracleEntry<BlockNumberFor<T>> = {
 					let e = OracleEntry {
 						price,
 						volume: Volume::default(),
 						liquidity,
-						updated_at: T::BlockNumber::zero(),
+						updated_at: BlockNumberFor::<T>::zero(),
 					};
 					if ordered_pair(asset_a, asset_b) == (asset_a, asset_b) {
 						e
@@ -211,7 +245,51 @@ pub mod pallet {
 	}
 
 	#[pallet::call]
-	impl<T: Config> Pallet<T> {}
+	impl<T: Config> Pallet<T> {
+		#[pallet::call_index(0)]
+		#[pallet::weight(<T as Config>::WeightInfo::add_oracle())]
+		pub fn add_oracle(origin: OriginFor<T>, source: Source, assets: (AssetId, AssetId)) -> DispatchResult {
+			T::AuthorityOrigin::ensure_origin(origin)?;
+
+			let assets = ordered_pair(assets.0, assets.1);
+
+			WhitelistedAssets::<T>::mutate(|list| {
+				list.try_insert((source, (assets)))
+					.map_err(|_| Error::<T>::TooManyUniqueEntries)
+			})?;
+
+			Self::deposit_event(Event::AddedToWhitelist { source, assets });
+
+			Ok(())
+		}
+
+		#[pallet::call_index(1)]
+		#[pallet::weight(<T as Config>::WeightInfo::remove_oracle())]
+		pub fn remove_oracle(origin: OriginFor<T>, source: Source, assets: (AssetId, AssetId)) -> DispatchResult {
+			T::AuthorityOrigin::ensure_origin(origin)?;
+
+			let assets = ordered_pair(assets.0, assets.1);
+
+			WhitelistedAssets::<T>::mutate(|list| {
+				ensure!(list.remove(&(source, (assets))), Error::<T>::OracleNotFound);
+
+				Ok::<(), DispatchError>(())
+			})?;
+
+			// remove oracle from the storage
+			for period in T::SupportedPeriods::get().into_iter() {
+				let _ = Accumulator::<T>::mutate(|accumulator| {
+					accumulator.remove(&(source, assets));
+					Ok::<(), ()>(())
+				});
+				Oracles::<T>::remove((source, assets, period));
+			}
+
+			Self::deposit_event(Event::RemovedFromWhitelist { source, assets });
+
+			Ok(())
+		}
+	}
 }
 
 impl<T: Config> Pallet<T> {
@@ -220,8 +298,13 @@ impl<T: Config> Pallet<T> {
 	pub(crate) fn on_entry(
 		src: Source,
 		assets: (AssetId, AssetId),
-		oracle_entry: OracleEntry<T::BlockNumber>,
+		oracle_entry: OracleEntry<BlockNumberFor<T>>,
 	) -> Result<(), ()> {
+		if !T::OracleWhitelist::contains(&(src, assets.0, assets.1)) {
+			// if we don't track oracle for given asset pair, don't throw error
+			return Ok(());
+		}
+
 		Accumulator::<T>::mutate(|accumulator| {
 			if let Some(entry) = accumulator.get_mut(&(src, assets)) {
 				entry.accumulate_volume_and_update_from(&oracle_entry);
@@ -240,7 +323,7 @@ impl<T: Config> Pallet<T> {
 	pub(crate) fn on_trade(
 		src: Source,
 		assets: (AssetId, AssetId),
-		oracle_entry: OracleEntry<T::BlockNumber>,
+		oracle_entry: OracleEntry<BlockNumberFor<T>>,
 	) -> Result<Weight, (Weight, DispatchError)> {
 		let weight = OnActivityHandler::<T>::on_trade_weight();
 		Self::on_entry(src, assets, oracle_entry)
@@ -253,7 +336,7 @@ impl<T: Config> Pallet<T> {
 	pub(crate) fn on_liquidity_changed(
 		src: Source,
 		assets: (AssetId, AssetId),
-		oracle_entry: OracleEntry<T::BlockNumber>,
+		oracle_entry: OracleEntry<BlockNumberFor<T>>,
 	) -> Result<Weight, (Weight, DispatchError)> {
 		let weight = OnActivityHandler::<T>::on_liquidity_changed_weight();
 		Self::on_entry(src, assets, oracle_entry)
@@ -265,8 +348,8 @@ impl<T: Config> Pallet<T> {
 	pub(crate) fn last_block_oracle(
 		source: Source,
 		assets: (AssetId, AssetId),
-		block: T::BlockNumber,
-	) -> Option<(OracleEntry<T::BlockNumber>, T::BlockNumber)> {
+		block: BlockNumberFor<T>,
+	) -> Option<(OracleEntry<BlockNumberFor<T>>, BlockNumberFor<T>)> {
 		Self::oracle((source, assets, LastBlock)).map(|(mut last_block, init)| {
 			// update the `LastBlock` oracle to the last block if it hasn't been updated for a while
 			// price and liquidity stay constant, volume becomes zero
@@ -295,7 +378,7 @@ impl<T: Config> Pallet<T> {
 		src: Source,
 		assets: (AssetId, AssetId),
 		period: OraclePeriod,
-		incoming_entry: OracleEntry<T::BlockNumber>,
+		incoming_entry: OracleEntry<BlockNumberFor<T>>,
 	) {
 		Oracles::<T>::mutate((src, assets, period), |oracle| {
 			// initialize the oracle entry if it doesn't exist
@@ -308,26 +391,28 @@ impl<T: Config> Pallet<T> {
 				// update the entry to the parent block if it hasn't been updated for a while
 				if parent > prev_entry.updated_at {
 					Self::last_block_oracle(src, assets, parent)
-                        .and_then(|(last_block, _)| {
-                            prev_entry.update_outdated_to_current(period, &last_block).map(|_| ())
-                        }).unwrap_or_else(|| {
-                            log::warn!(
-                                target: LOG_TARGET,
-                                "Updating EMA oracle ({src:?}, {assets:?}, {period:?}) to parent block failed. Defaulting to previous value."
-                            );
-                            debug_assert!(false, "Updating to parent block should not fail.");
-                        })
+						.and_then(|(last_block, _)| {
+							prev_entry.update_outdated_to_current(period, &last_block).map(|_| ())
+						})
+						.unwrap_or_else(|| {
+							log::warn!(
+								target: LOG_TARGET,
+								"Updating EMA oracle ({src:?}, {assets:?}, {period:?}) to parent block failed. Defaulting to previous value."
+							);
+							debug_assert!(false, "Updating to parent block should not fail.");
+						})
 				}
 				// calculate the actual update with the new value
-				prev_entry.update_to_new_by_integrating_incoming(period, &incoming_entry)
-                    .map(|_| ())
-                    .unwrap_or_else(|| {
-                        log::warn!(
-                            target: LOG_TARGET,
-                            "Updating EMA oracle ({src:?}, {assets:?}, {period:?}) to new value failed. Defaulting to previous value."
-                        );
-                        debug_assert!(false, "Updating to new value should not fail.");
-                });
+				prev_entry
+					.update_to_new_by_integrating_incoming(period, &incoming_entry)
+					.map(|_| ())
+					.unwrap_or_else(|| {
+						log::warn!(
+							target: LOG_TARGET,
+							"Updating EMA oracle ({src:?}, {assets:?}, {period:?}) to new value failed. Defaulting to previous value."
+						);
+						debug_assert!(false, "Updating to new value should not fail.");
+					});
 			};
 		});
 	}
@@ -340,7 +425,7 @@ impl<T: Config> Pallet<T> {
 		src: Source,
 		assets: (AssetId, AssetId),
 		period: OraclePeriod,
-	) -> Option<(OracleEntry<T::BlockNumber>, T::BlockNumber)> {
+	) -> Option<(OracleEntry<BlockNumberFor<T>>, BlockNumberFor<T>)> {
 		let parent = T::BlockNumberProvider::current_block_number().saturating_sub(One::one());
 		// First get the `LastBlock` oracle to calculate the updated values for the others.
 		let (last_block, last_block_init) = Self::last_block_oracle(src, assets, parent)?;
@@ -377,7 +462,7 @@ pub(crate) fn fractional_on_finalize_weight<T: Config>(max_entries: u32) -> Weig
 		.saturating_div(max_entries.into())
 }
 
-impl<T: Config> OnTradeHandler<AssetId, Balance> for OnActivityHandler<T> {
+impl<T: Config> OnTradeHandler<AssetId, Balance, Price> for OnActivityHandler<T> {
 	fn on_trade(
 		source: Source,
 		asset_a: AssetId,
@@ -386,13 +471,18 @@ impl<T: Config> OnTradeHandler<AssetId, Balance> for OnActivityHandler<T> {
 		amount_b: Balance,
 		liquidity_a: Balance,
 		liquidity_b: Balance,
+		price: Price,
 	) -> Result<Weight, (Weight, DispatchError)> {
-		// We assume that zero values are not valid and can be ignored.
-		if liquidity_a.is_zero() || liquidity_b.is_zero() || amount_a.is_zero() || amount_b.is_zero() {
-			log::warn!(target: LOG_TARGET, "Neither liquidity nor amounts should be zero. Source: {source:?}, liquidity: ({liquidity_a},{liquidity_b}), amounts: {amount_a}/{amount_b}");
+		// We assume that zero liquidity values are not valid and can be ignored.
+		if liquidity_a.is_zero() || liquidity_b.is_zero() {
+			log::warn!(
+				target: LOG_TARGET,
+				"Liquidity amounts should not be zero. Source: {source:?}, liquidity: ({liquidity_a},{liquidity_b})"
+			);
 			return Err((Self::on_trade_weight(), Error::<T>::OnTradeValueZero.into()));
 		}
-		let price = determine_normalized_price(asset_a, asset_b, liquidity_a, liquidity_b);
+
+		let price = determine_normalized_price(asset_a, asset_b, price);
 		let volume = determine_normalized_volume(asset_a, asset_b, amount_a, amount_b);
 		let liquidity = determine_normalized_liquidity(asset_a, asset_b, liquidity_a, liquidity_b);
 
@@ -414,7 +504,7 @@ impl<T: Config> OnTradeHandler<AssetId, Balance> for OnActivityHandler<T> {
 	}
 }
 
-impl<T: Config> OnLiquidityChangedHandler<AssetId, Balance> for OnActivityHandler<T> {
+impl<T: Config> OnLiquidityChangedHandler<AssetId, Balance, Price> for OnActivityHandler<T> {
 	fn on_liquidity_changed(
 		source: Source,
 		asset_a: AssetId,
@@ -423,6 +513,7 @@ impl<T: Config> OnLiquidityChangedHandler<AssetId, Balance> for OnActivityHandle
 		_amount_b: Balance,
 		liquidity_a: Balance,
 		liquidity_b: Balance,
+		price: Price,
 	) -> Result<Weight, (Weight, DispatchError)> {
 		if liquidity_a.is_zero() || liquidity_b.is_zero() {
 			log::trace!(
@@ -430,11 +521,8 @@ impl<T: Config> OnLiquidityChangedHandler<AssetId, Balance> for OnActivityHandle
 				"Liquidity is zero. Source: {source:?}, liquidity: ({liquidity_a},{liquidity_a})"
 			);
 		}
-		let price = if liquidity_a.is_zero() || liquidity_b.is_zero() {
-			Price::zero()
-		} else {
-			determine_normalized_price(asset_a, asset_b, liquidity_a, liquidity_b)
-		};
+
+		let price = determine_normalized_price(asset_a, asset_b, price);
 		let liquidity = determine_normalized_liquidity(asset_a, asset_b, liquidity_a, liquidity_b);
 		let updated_at = T::BlockNumberProvider::current_block_number();
 		let entry = OracleEntry {
@@ -456,16 +544,11 @@ impl<T: Config> OnLiquidityChangedHandler<AssetId, Balance> for OnActivityHandle
 }
 
 /// Calculate price from ordered assets
-pub fn determine_normalized_price(
-	asset_in: AssetId,
-	asset_out: AssetId,
-	amount_in: Balance,
-	amount_out: Balance,
-) -> Price {
+pub fn determine_normalized_price(asset_in: AssetId, asset_out: AssetId, price: Price) -> Price {
 	if ordered_pair(asset_in, asset_out) == (asset_in, asset_out) {
-		Price::new(amount_in, amount_out)
+		price
 	} else {
-		Price::new(amount_out, amount_in)
+		price.inverted()
 	}
 }
 
@@ -516,7 +599,7 @@ pub enum OracleError {
 	SameAsset,
 }
 
-impl<T: Config> AggregatedOracle<AssetId, Balance, T::BlockNumber, Price> for Pallet<T> {
+impl<T: Config> AggregatedOracle<AssetId, Balance, BlockNumberFor<T>, Price> for Pallet<T> {
 	type Error = OracleError;
 
 	/// Returns the entry corresponding to the given assets and period.
@@ -529,7 +612,7 @@ impl<T: Config> AggregatedOracle<AssetId, Balance, T::BlockNumber, Price> for Pa
 		asset_b: AssetId,
 		period: OraclePeriod,
 		source: Source,
-	) -> Result<AggregatedEntry<Balance, T::BlockNumber, Price>, OracleError> {
+	) -> Result<AggregatedEntry<Balance, BlockNumberFor<T>, Price>, OracleError> {
 		if asset_a == asset_b {
 			return Err(OracleError::SameAsset);
 		};
@@ -550,7 +633,7 @@ impl<T: Config> AggregatedOracle<AssetId, Balance, T::BlockNumber, Price> for Pa
 	}
 }
 
-impl<T: Config> AggregatedPriceOracle<AssetId, T::BlockNumber, Price> for Pallet<T> {
+impl<T: Config> AggregatedPriceOracle<AssetId, BlockNumberFor<T>, Price> for Pallet<T> {
 	type Error = OracleError;
 
 	fn get_price(
@@ -558,12 +641,20 @@ impl<T: Config> AggregatedPriceOracle<AssetId, T::BlockNumber, Price> for Pallet
 		asset_b: AssetId,
 		period: OraclePeriod,
 		source: Source,
-	) -> Result<(Price, T::BlockNumber), Self::Error> {
+	) -> Result<(Price, BlockNumberFor<T>), Self::Error> {
 		Self::get_entry(asset_a, asset_b, period, source)
 			.map(|AggregatedEntry { price, oracle_age, .. }| (price, oracle_age))
 	}
 
 	fn get_price_weight() -> Weight {
 		Self::get_entry_weight()
+	}
+}
+
+/// Oracle whitelist based on the pallet's storage.
+pub struct OracleWhitelist<T>(PhantomData<T>);
+impl<T: Config> Contains<(Source, AssetId, AssetId)> for OracleWhitelist<T> {
+	fn contains(t: &(Source, AssetId, AssetId)) -> bool {
+		WhitelistedAssets::<T>::get().contains(&(t.0, (t.1, t.2)))
 	}
 }

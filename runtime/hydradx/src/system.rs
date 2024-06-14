@@ -29,14 +29,19 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
 	dispatch::DispatchClass,
 	parameter_types,
-	sp_runtime::{traits::IdentityLookup, FixedPointNumber, Perbill, Perquintill},
-	traits::{Contains, InstanceFilter},
+	sp_runtime::{
+		traits::{ConstU32, IdentityLookup},
+		FixedPointNumber, Perbill, Perquintill, RuntimeDebug,
+	},
+	traits::{ConstBool, Contains, InstanceFilter, SortedMembers},
 	weights::{
 		constants::{BlockExecutionWeight, RocksDbWeight},
 		ConstantMultiplier, WeightToFeeCoefficient, WeightToFeeCoefficients, WeightToFeePolynomial,
 	},
-	PalletId, RuntimeDebug,
+	PalletId,
 };
+use frame_system::EnsureSignedBy;
+use hydradx_adapters::{OraclePriceProvider, RelayChainBlockNumberProvider};
 use scale_info::TypeInfo;
 
 pub struct CallFilter;
@@ -56,6 +61,8 @@ impl Contains<RuntimeCall> for CallFilter {
 			return false;
 		}
 
+		let hub_asset_id = <Runtime as pallet_omnipool::Config>::HubAssetId::get();
+
 		// filter transfers of LRNA and omnipool assets to the omnipool account
 		if let RuntimeCall::Tokens(orml_tokens::Call::transfer { dest, currency_id, .. })
 		| RuntimeCall::Tokens(orml_tokens::Call::transfer_keep_alive { dest, currency_id, .. })
@@ -63,9 +70,7 @@ impl Contains<RuntimeCall> for CallFilter {
 		| RuntimeCall::Currencies(pallet_currencies::Call::transfer { dest, currency_id, .. }) = call
 		{
 			// Lookup::lookup() is not necessary thanks to IdentityLookup
-			if dest == &Omnipool::protocol_account()
-				&& (*currency_id == <Runtime as pallet_omnipool::Config>::HubAssetId::get()
-					|| Omnipool::exists(*currency_id))
+			if dest == &Omnipool::protocol_account() && (*currency_id == hub_asset_id || Omnipool::exists(*currency_id))
 			{
 				return false;
 			}
@@ -82,7 +87,18 @@ impl Contains<RuntimeCall> for CallFilter {
 			}
 		}
 
+		// XYK pools with LRNA are not allowed
+		if let RuntimeCall::XYK(pallet_xyk::Call::create_pool { asset_a, asset_b, .. }) = call {
+			if *asset_a == hub_asset_id || *asset_b == hub_asset_id {
+				return false;
+			}
+		}
+
 		match call {
+			RuntimeCall::PolkadotXcm(pallet_xcm::Call::send { .. }) => true,
+			// create and create2 are only allowed through RPC or Runtime API
+			RuntimeCall::EVM(pallet_evm::Call::create { .. }) => false,
+			RuntimeCall::EVM(pallet_evm::Call::create2 { .. }) => false,
 			RuntimeCall::PolkadotXcm(_) => false,
 			RuntimeCall::OrmlXcm(_) => false,
 			_ => true,
@@ -136,9 +152,9 @@ impl frame_system::Config for Runtime {
 	/// The aggregated dispatch type that is available for extrinsics.
 	type RuntimeCall = RuntimeCall;
 	/// The index type for storing how many extrinsics an account has signed.
-	type Index = Index;
+	type Nonce = Index;
 	/// The index type for blocks.
-	type BlockNumber = BlockNumber;
+	type Block = Block;
 	/// The type for hashing blocks and tries.
 	type Hash = Hash;
 	/// The hashing algorithm used.
@@ -147,8 +163,6 @@ impl frame_system::Config for Runtime {
 	type AccountId = AccountId;
 	/// The lookup mechanism to get account ID from whatever is passed in dispatchers.
 	type Lookup = IdentityLookup<AccountId>;
-	/// The header type.
-	type Header = generic::Header<BlockNumber, BlakeTwo256>;
 	/// The ubiquitous event type.
 	type RuntimeEvent = RuntimeEvent;
 	/// Maximum number of block number to block hash mappings to keep (oldest pruned first).
@@ -213,6 +227,7 @@ impl pallet_aura::Config for Runtime {
 	type AuthorityId = AuraId;
 	type MaxAuthorities = MaxAuthorities;
 	type DisabledValidators = ();
+	type AllowMultipleBlocksPerSlot = ConstBool<false>;
 }
 
 impl parachain_info::Config for Runtime {}
@@ -227,7 +242,6 @@ impl pallet_authorship::Config for Runtime {
 parameter_types! {
 	pub const PotId: PalletId = PalletId(*b"PotStake");
 	pub const MaxCandidates: u32 = 0;
-	pub const MinCandidates: u32 = 0;
 	pub const MaxInvulnerables: u32 = 50;
 }
 
@@ -237,7 +251,6 @@ impl pallet_collator_selection::Config for Runtime {
 	type UpdateOrigin = MoreThanHalfCouncil;
 	type PotId = PotId;
 	type MaxCandidates = MaxCandidates;
-	type MinCandidates = MinCandidates;
 	type MaxInvulnerables = MaxInvulnerables;
 	// should be a multiple of session or things will get inconsistent
 	type KickThreshold = Period;
@@ -245,6 +258,7 @@ impl pallet_collator_selection::Config for Runtime {
 	type ValidatorIdOf = pallet_collator_selection::IdentityCollator;
 	type ValidatorRegistration = Session;
 	type WeightInfo = weights::collator_selection::HydraWeight<Runtime>;
+	type MinEligibleCollators = ConstU32<4>;
 }
 
 parameter_types! {
@@ -410,6 +424,8 @@ pub type SlowAdjustingFeeUpdate<R> =
 
 pub struct WeightToFee;
 
+pub const SUBSTRATE_FEE_DIVIDER: u128 = 4; // We use this to divide fee related constant as HDX price is high (~0.26$), but we want to reduce the fee price
+
 impl WeightToFeePolynomial for WeightToFee {
 	type Balance = Balance;
 
@@ -425,7 +441,7 @@ impl WeightToFeePolynomial for WeightToFee {
 	///   - Setting it to `1` will cause the literal `#[weight = x]` values to be charged.
 	fn polynomial() -> WeightToFeeCoefficients<Self::Balance> {
 		// extrinsic base weight (smallest non-zero weight) is mapped to 1/10 CENT
-		let p = CENTS; // 1_000_000_000_000
+		let p = CENTS / SUBSTRATE_FEE_DIVIDER; // 1_000_000_000_000 / SUBSTRATE_FEE_DIVIDER
 		let q = 10 * Balance::from(ExtrinsicBaseWeight::get().ref_time()); // 7_919_840_000
 		smallvec::smallvec![WeightToFeeCoefficient {
 			degree: 1,
@@ -437,18 +453,18 @@ impl WeightToFeePolynomial for WeightToFee {
 }
 
 parameter_types! {
-	pub const TransactionByteFee: Balance = 10 * MILLICENTS;
+	pub const TransactionByteFee: Balance = 10 * MILLICENTS / SUBSTRATE_FEE_DIVIDER;
 	/// The portion of the `NORMAL_DISPATCH_RATIO` that we adjust the fees with. Blocks filled less
 	/// than this will decrease the weight and more will increase.
 	pub const TargetBlockFullness: Perquintill = Perquintill::from_percent(25);
 	/// The adjustment variable of the runtime. Higher values will cause `TargetBlockFullness` to
 	/// change the fees more rapidly.
-	pub AdjustmentVariable: Multiplier = Multiplier::saturating_from_rational(6, 100_000);
+	pub AdjustmentVariable: Multiplier = Multiplier::saturating_from_rational(10, 113);
 	/// Minimum amount of the multiplier. This value cannot be too low. A test case should ensure
 	/// that combined with `AdjustmentVariable`, we can recover from the minimum.
-	pub MinimumMultiplier: Multiplier = Multiplier::saturating_from_rational(1, 1_000_000u128);
+	pub MinimumMultiplier: Multiplier = Multiplier::saturating_from_rational(1, 1000u128);
 	/// The maximum amount of the multiplier.
-	pub MaximumMultiplier: Multiplier = Multiplier::saturating_from_integer(4);
+	pub MaximumMultiplier: Multiplier = Multiplier::saturating_from_integer(320);
 }
 
 impl pallet_transaction_payment::Config for Runtime {
@@ -464,10 +480,15 @@ impl pallet_transaction_multi_payment::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type AcceptedCurrencyOrigin = SuperMajorityTechCommittee;
 	type Currencies = Currencies;
-	type SpotPriceProvider = Omnipool;
+	type RouteProvider = Router;
+	type OraclePriceProvider = OraclePriceProvider<AssetId, EmaOracle, LRNA>;
 	type WeightInfo = weights::payment::HydraWeight<Runtime>;
-	type WeightToFee = WeightToFee;
 	type NativeAssetId = NativeAssetId;
+	type EvmAssetId = evm::WethAssetId;
+	type InspectEvmAccounts = EVMAccounts;
+	type WeightToFee = WeightToFee;
+	type EvmPermit = evm::permit::EvmPermitHandler<Runtime>;
+	type TryCallCurrency<'a> = pallet_transaction_multi_payment::TryCallCurrency<Runtime>;
 }
 
 impl pallet_relaychain_info::Config for Runtime {
@@ -500,13 +521,39 @@ impl pallet_collator_rewards::Config for Runtime {
 	type RewardPerCollator = RewardPerCollator;
 	type RewardCurrencyId = NativeAssetId;
 	type ExcludedCollators = ExcludedCollators;
-	// We wrap the ` SessionManager` implementation of `CollatorSelection` to get the collatrs that
+	// We wrap the ` SessionManager` implementation of `CollatorSelection` to get the collators that
 	// we hand out rewards to.
 	type SessionManager = CollatorSelection;
+	type MaxCandidates = MaxInvulnerables;
 }
 
 impl pallet_transaction_pause::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type UpdateOrigin = SuperMajorityTechCommittee;
 	type WeightInfo = weights::transaction_pause::HydraWeight<Runtime>;
+}
+
+pub struct TechCommAccounts;
+impl SortedMembers<AccountId> for TechCommAccounts {
+	fn sorted_members() -> Vec<AccountId> {
+		TechnicalCommittee::members()
+	}
+}
+
+parameter_types! {
+	// The deposit configuration for the singed migration. Specially if you want to allow any signed account to do the migration (see `SignedFilter`, these deposits should be high)
+	pub const MigrationSignedDepositPerItem: Balance = CENTS;
+	pub const MigrationSignedDepositBase: Balance = 20 * DOLLARS;
+	pub const MaxKeyLen: u32 = 512;	// 144, but use the default value
+}
+
+impl pallet_state_trie_migration::Config for Runtime {
+	type ControlOrigin = SuperMajorityTechCommittee;
+	type SignedFilter = EnsureSignedBy<TechCommAccounts, AccountId>;
+	type RuntimeEvent = RuntimeEvent;
+	type Currency = Balances;
+	type MaxKeyLen = MaxKeyLen;
+	type SignedDepositPerItem = MigrationSignedDepositPerItem;
+	type SignedDepositBase = MigrationSignedDepositBase;
+	type WeightInfo = weights::state_trie::HydraWeight<Runtime>;
 }

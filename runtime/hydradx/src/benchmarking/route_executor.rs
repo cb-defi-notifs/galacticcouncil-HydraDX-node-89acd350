@@ -1,4 +1,4 @@
-// This file is part of Basilisk-node
+// This file is part of HydraDX-node
 
 // Copyright (C) 2020-2022  Intergalactic, Limited (GIB).
 // SPDX-License-Identifier: Apache-2.0
@@ -16,232 +16,362 @@
 // limitations under the License.
 #![allow(clippy::result_large_err)]
 
-use crate::{AccountId, AssetId, Balance, Currencies, Omnipool, Runtime, Tokens};
+use crate::{
+	AccountId, AssetId, Balance, Currencies, InsufficientEDinHDX, Router, Runtime, RuntimeOrigin, System, LBP, XYK,
+};
 
 use super::*;
-
-use frame_benchmarking::account;
-use frame_system::{Pallet as System, RawOrigin};
+use crate::benchmarking::dca::HDX;
+use frame_benchmarking::{account, BenchmarkError};
+use frame_support::dispatch::DispatchResult;
+use frame_support::{assert_ok, ensure};
+use frame_system::RawOrigin;
+use hydradx_traits::router::inverse_route;
+use hydradx_traits::router::AssetPair;
+use hydradx_traits::router::{PoolType, RouterT, Trade};
 use orml_benchmarking::runtime_benchmarks;
 use orml_traits::{MultiCurrency, MultiCurrencyExtended};
+use primitives::constants::currency::UNITS;
+use sp_std::vec;
+pub const INITIAL_BALANCE: Balance = 10_000_000 * UNITS;
 
-pub const TVL_CAP: Balance = 222_222_000_000_000_000_000_000;
+fn funded_account(name: &'static str, index: u32, assets: &[AssetId]) -> AccountId {
+	let account: AccountId = account(name, index, 0);
+	//Necessary to pay ED for insufficient assets.
+	<Currencies as MultiCurrencyExtended<_>>::update_balance(0, &account, INITIAL_BALANCE as i128).unwrap();
 
-pub const HDX: AssetId = 0;
-pub const LRNA: AssetId = 1;
-pub const DAI: AssetId = 2;
+	for asset in assets {
+		assert_ok!(<Currencies as MultiCurrencyExtended<_>>::update_balance(
+			*asset,
+			&account,
+			INITIAL_BALANCE.try_into().unwrap(),
+		));
+	}
+	account
+}
 
-pub const ONE: Balance = 1_000_000_000_000;
+fn setup_lbp(caller: AccountId, asset_in: AssetId, asset_out: AssetId) -> DispatchResult {
+	let asset_in_amount = 1_000_000_000;
+	let asset_out_amount = 2_000_000_000;
+	let initial_weight = 20_000_000;
+	let final_weight = 90_000_000;
+	let fee = (2, 1_000);
+	let fee_collector = caller.clone();
+	let repay_target = 0;
 
-type RouteExecutor<T> = pallet_route_executor::Pallet<T>;
-type CurrencyOf<T> = <T as pallet_omnipool::Config>::Currency;
-type OmnipoolPallet<T> = pallet_omnipool::Pallet<T>;
+	let pool_id = LBP::pair_account_from_assets(asset_in, asset_out);
 
-fn initialize_omnipool() -> DispatchResult {
-	let stable_amount: Balance = 1_000_000_000_000_000_000_u128;
-	let native_amount: Balance = 1_000_000_000_000_000_000u128;
-	let stable_price: FixedU128 = FixedU128::from((1, 2));
-	let native_price: FixedU128 = FixedU128::from(1);
-	let acc = Omnipool::protocol_account();
-
-	Omnipool::set_tvl_cap(RawOrigin::Root.into(), TVL_CAP)?;
-
-	let _ = regi_asset(b"HDX".to_vec(), UNITS, HDX);
-	let _ = regi_asset(b"LRNA".to_vec(), UNITS, LRNA);
-	let _ = regi_asset(b"DAI".to_vec(), UNITS, DAI);
-
-	assert_ok!(Tokens::set_balance(
+	LBP::create_pool(
 		RawOrigin::Root.into(),
-		acc.clone(),
-		DAI,
-		stable_amount,
-		0
-	));
-	assert_ok!(Currencies::update_balance(
-		RawOrigin::Root.into(),
-		acc,
-		HDX,
-		native_amount as i128,
-	));
+		caller.clone(),
+		asset_in,
+		asset_in_amount,
+		asset_out,
+		asset_out_amount,
+		initial_weight,
+		final_weight,
+		pallet_lbp::WeightCurveType::Linear,
+		fee,
+		fee_collector,
+		repay_target,
+	)?;
+	ensure!(
+		pallet_lbp::PoolData::<Runtime>::contains_key(&pool_id),
+		"Pool does not exist."
+	);
 
-	Omnipool::initialize_pool(
-		RawOrigin::Root.into(),
-		stable_price,
-		native_price,
-		Permill::from_percent(100),
-		Permill::from_percent(100),
+	let start = 1u32;
+	let end = 11u32;
+
+	LBP::update_pool_data(
+		RawOrigin::Signed(caller).into(),
+		pool_id,
+		None,
+		Some(start),
+		Some(end),
+		None,
+		None,
+		None,
+		None,
+		None,
 	)?;
 
-	//NOTE: This is necessary for oracle to provide price.
-	do_lrna_hdx_trade::<Runtime>()?;
-	do_lrna_dai_trade::<Runtime>()?;
-
-	set_period::<Runtime>(10);
-
-	do_lrna_dai_trade::<Runtime>()?;
-	do_lrna_hdx_trade::<Runtime>()?;
-
+	System::set_block_number(2u32);
 	Ok(())
 }
 
-pub fn regi_asset(name: Vec<u8>, deposit: Balance, asset_id: AssetId) -> Result<AssetId, DispatchError> {
-	let name = AssetRegistry::to_bounded_name(name)?;
-	AssetRegistry::register_asset(
-		name,
-		pallet_asset_registry::AssetType::<AssetId>::Token,
-		deposit,
-		Some(asset_id),
-		None,
-	)
+fn create_xyk_pool(asset_a: u32, asset_b: u32) {
+	let caller: AccountId = funded_account("caller", 3, &[asset_a, asset_b]);
+
+	assert_ok!(Currencies::update_balance(
+		RawOrigin::Root.into(),
+		caller.clone(),
+		0_u32,
+		InsufficientEDinHDX::get() as i128,
+	));
+
+	let amount = 100000 * UNITS;
+	assert_ok!(Currencies::update_balance(
+		RuntimeOrigin::root(),
+		caller.clone(),
+		asset_a,
+		amount as i128,
+	));
+
+	assert_ok!(Currencies::update_balance(
+		RuntimeOrigin::root(),
+		caller.clone(),
+		asset_b,
+		amount as i128,
+	));
+
+	assert_ok!(XYK::create_pool(
+		RuntimeOrigin::signed(caller),
+		asset_a,
+		amount,
+		asset_b,
+		amount,
+	));
 }
-
-//NOTE: This is necessary for oracle to provide price.
-fn do_lrna_hdx_trade<T: pallet_omnipool::Config>() -> DispatchResult
-where
-	<T as pallet_omnipool::Config>::Currency: MultiCurrencyExtended<T::AccountId, Amount = i128>,
-	<T as pallet_omnipool::Config>::AssetId: From<u32>,
-{
-	let trader = create_funded_account::<T>("tmp_trader", 0, 100 * ONE, HDX.into());
-
-	fund::<T>(trader.clone(), LRNA.into(), 100 * ONE)?;
-
-	OmnipoolPallet::<T>::sell(RawOrigin::Signed(trader).into(), LRNA.into(), HDX.into(), ONE, 0)
-}
-
-//NOTE: This is necessary for oracle to provide price.
-fn do_lrna_dai_trade<T: pallet_omnipool::Config>() -> DispatchResult
-where
-	<T as pallet_omnipool::Config>::Currency: MultiCurrencyExtended<T::AccountId, Amount = i128>,
-	<T as pallet_omnipool::Config>::AssetId: From<u32>,
-{
-	let trader = create_funded_account::<T>("tmp_trader", 0, 100 * ONE, DAI.into());
-
-	fund::<T>(trader.clone(), LRNA.into(), 100 * ONE)?;
-
-	OmnipoolPallet::<T>::sell(RawOrigin::Signed(trader).into(), LRNA.into(), DAI.into(), ONE, 0)
-}
-
-fn fund<T: pallet_omnipool::Config>(
-	to: T::AccountId,
-	currency: <T as pallet_omnipool::Config>::AssetId,
-	amount: Balance,
-) -> DispatchResult {
-	CurrencyOf::<T>::deposit(currency, &to, amount)
-}
-
-use frame_support::assert_ok;
-use frame_support::traits::Hooks;
-use hydradx_traits::router::PoolType;
-use pallet_route_executor::Trade;
-use sp_runtime::{DispatchError, DispatchResult, FixedU128, Permill};
-use sp_std::vec;
-
-const SEED: u32 = 1;
-pub const UNITS: Balance = 100_000_000_000;
-
-fn create_funded_account<T: pallet_omnipool::Config>(
-	name: &'static str,
-	index: u32,
-	amount: Balance,
-	currency: <T as pallet_omnipool::Config>::AssetId,
-) -> T::AccountId
-where
-	<T as pallet_omnipool::Config>::AssetId: From<u32>,
-{
-	let caller: T::AccountId = account(name, index, SEED);
-
-	fund::<T>(caller.clone(), currency, amount).unwrap();
-
-	caller
-}
-
-fn set_period<T: pallet_omnipool::Config>(to: u32)
-where
-	T: pallet_ema_oracle::Config,
-	CurrencyOf<T>: MultiCurrencyExtended<T::AccountId, Amount = i128>,
-	<T as pallet_omnipool::Config>::AssetId: From<u32>,
-{
-	while System::<T>::block_number() < to.into() {
-		let b = System::<T>::block_number();
-
-		System::<T>::on_finalize(b);
-		pallet_ema_oracle::Pallet::<T>::on_finalize(b);
-
-		System::<T>::on_initialize(b + 1_u32.into());
-		pallet_ema_oracle::Pallet::<T>::on_initialize(b + 1_u32.into());
-
-		System::<T>::set_block_number(b + 1_u32.into());
-	}
-}
-
-//TODO: Rebenchmark both buy and sell with dynamic length of route once we have other AMMs in hydra
 
 runtime_benchmarks! {
-	{ Runtime, pallet_route_executor}
+	{Runtime, pallet_route_executor}
 
-	sell {
-		let n in 1..2;
+	// Calculates the weight of LBP trade. Used in the calculation to determine the weight of the overhead.
+	calculate_and_execute_sell_in_lbp {
+		let c in 0..1;	// if c == 1, calculate_sell_trade_amounts is executed
 
-		initialize_omnipool()?;
+		let asset_in = register_external_asset(b"FCA".to_vec()).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_out = register_external_asset(b"FCB".to_vec()).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let caller: AccountId = funded_account("caller", 7, &[asset_in, asset_out]);
+		let seller: AccountId = funded_account("seller", 8, &[asset_in, asset_out]);
 
-		let asset_in = HDX;
-		let asset_out = DAI;
+		setup_lbp(caller, asset_in, asset_out)?;
+
 		let trades = vec![Trade {
-			pool: PoolType::Omnipool,
-			asset_in: HDX,
-			asset_out: DAI
+			pool: PoolType::LBP,
+			asset_in,
+			asset_out
 		}];
 
-		let caller: AccountId = create_funded_account::<Runtime>("caller", 0, 100 * UNITS, HDX);
+		let amount_to_sell: Balance = 100_000_000;
 
-		let amount_to_sell = 10 * UNITS;
 	}: {
-		RouteExecutor::<Runtime>::sell(RawOrigin::Signed(caller.clone()).into(), asset_in, asset_out, amount_to_sell, 0u128, trades)?
+		if c != 0 {
+			Router::calculate_sell_trade_amounts(trades.as_slice(), amount_to_sell)?;
+		}
+		Router::sell(RawOrigin::Signed(seller.clone()).into(), asset_in, asset_out, amount_to_sell, 0u128, trades.clone())?;
 	}
-	verify{
-		assert_eq!(<Currencies as MultiCurrency<_>>::total_balance(asset_in, &caller), 100 * UNITS -  amount_to_sell);
-		assert!(<Currencies as MultiCurrency<_>>::total_balance(asset_out, &caller) > 0);
+	verify {
+		assert_eq!(<Currencies as MultiCurrency<_>>::free_balance(
+		asset_in,
+		&seller,
+		), INITIAL_BALANCE - amount_to_sell);
 	}
 
-	buy {
-		let n in 1..2;
+	// Calculates the weight of LBP trade. Used in the calculation to determine the weight of the overhead.
+	calculate_and_execute_buy_in_lbp {
+		let c in 1..2;	// number of times `calculate_buy_trade_amounts` is executed
+		let b in 0..1;	// if e == 1, buy is executed
 
-		initialize_omnipool()?;
+		let asset_in = register_external_asset(b"FCA".to_vec()).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_out = register_external_asset(b"FCB".to_vec()).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let caller: AccountId = funded_account("caller", 0, &[asset_in, asset_out]);
+		let buyer: AccountId = funded_account("buyer", 1, &[asset_in, asset_out]);
 
-		let asset_in = HDX;
-		let asset_out = DAI;
+		setup_lbp(caller, asset_in, asset_out)?;
+
 		let trades = vec![Trade {
-			pool: PoolType::Omnipool,
-			asset_in: HDX,
-			asset_out: DAI
+			pool: PoolType::LBP,
+			asset_in,
+			asset_out
 		}];
 
-		let caller: AccountId = create_funded_account::<Runtime>("caller", 0, 100 * UNITS, HDX);
+		let amount_to_buy = 100_000_000;
 
-		let amount_to_buy = 10 * UNITS;
 	}: {
-		RouteExecutor::<Runtime>::buy(RawOrigin::Signed(caller.clone()).into(), asset_in, asset_out, amount_to_buy, u128::MAX, trades)?
+		for _ in 1..c {
+			Router::calculate_buy_trade_amounts(trades.as_slice(), amount_to_buy)?;
+		}
+		if b != 0 {
+			Router::buy(RawOrigin::Signed(buyer.clone()).into(), asset_in, asset_out, amount_to_buy, u128::MAX, trades)?
+		}
 	}
-	verify{
-		assert!(<Currencies as MultiCurrency<_>>::total_balance(asset_out, &caller) < 100 * UNITS);
-		assert!(<Currencies as MultiCurrency<_>>::total_balance(asset_out, &caller) > 0);
+	verify {
+		if b != 0 {
+			assert!(<Currencies as MultiCurrency<_>>::free_balance(
+			asset_in,
+			&buyer,
+			) < INITIAL_BALANCE);
+		}
 	}
 
+	// Calculates the weight of xyk set route. Used in the calculation to determine the weight of the overhead.
+	set_route_for_xyk {
+		let asset_1 = register_asset(b"AS1".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_2 = register_asset(b"AS2".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_3 = register_asset(b"AS3".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_4 = register_asset(b"AS4".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_5 = register_asset(b"AS5".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_6 = register_asset(b"AS6".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
 
+		let caller: AccountId = funded_account("caller", 0, &[asset_1, asset_2,asset_3]);
+		create_xyk_pool(HDX, asset_2);
+		create_xyk_pool(asset_2, asset_3);
+		create_xyk_pool(asset_3, asset_4);
+		create_xyk_pool(asset_4, asset_5);
+		create_xyk_pool(asset_5, asset_6);
+		create_xyk_pool(HDX, asset_6);
 
+		//INIT OMNIPOOL
+		/*let acc = Omnipool::protocol_account();
+		crate::benchmarking::omnipool::init()?;
+		// Create account for token provider and set balance
+		let owner: AccountId = account("owner", 0, 1);
+		let token_price = FixedU128::from((5,1));
+		let token_amount = 100000 * UNITS;
+		update_balance(asset_6, &acc, token_amount);
+		// Add the token to the pool
+		Omnipool::add_token(RawOrigin::Root.into(), asset_6, token_price, Permill::from_percent(100), owner)?;*/
+
+		let route = vec![Trade {
+			pool: PoolType::XYK,
+			asset_in: HDX,
+			asset_out: asset_2
+		},Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_2,
+			asset_out: asset_3
+		},Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_3,
+			asset_out: asset_4
+		},Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_4,
+			asset_out: asset_5
+		},Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_5,
+			asset_out: asset_6
+		}];
+		Router::set_route(
+			RawOrigin::Signed(caller.clone()).into(),
+			AssetPair::new(HDX, asset_6),
+			route,
+		)?;
+
+		let better_route = vec![Trade {
+			pool: PoolType::XYK,
+			asset_in: HDX,
+			asset_out: asset_6
+		},];
+
+	}: {
+		Router::set_route(
+			RawOrigin::Signed(caller.clone()).into(),
+			AssetPair::new(HDX, asset_6),
+			better_route.clone(),
+		)?;
+	}
+	verify {
+		let stored_route = Router::route(AssetPair::new(HDX, asset_6)).unwrap();
+		assert_eq!(stored_route, better_route);
+	}
+
+	force_insert_route {
+		let asset_1 = register_asset(b"AS1".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_2 = register_asset(b"AS2".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_3 = register_asset(b"AS3".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_4 = register_asset(b"AS4".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_5 = register_asset(b"AS5".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+		let asset_6 = register_asset(b"AS6".to_vec(), 1u128).map_err(|_| BenchmarkError::Stop("Failed to register asset"))?;
+
+		let caller: AccountId = funded_account("caller", 0, &[asset_1, asset_2,asset_3]);
+		create_xyk_pool(HDX, asset_2);
+		create_xyk_pool(asset_2, asset_3);
+		create_xyk_pool(asset_3, asset_4);
+		create_xyk_pool(asset_4, asset_5);
+		create_xyk_pool(asset_5, asset_6);
+		create_xyk_pool(HDX, asset_6);
+
+		let route = vec![Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_6,
+			asset_out: asset_5
+		},Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_5,
+			asset_out: asset_4
+		},Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_4,
+			asset_out: asset_3
+		},Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_3,
+			asset_out: asset_2
+		},Trade {
+			pool: PoolType::XYK,
+			asset_in: asset_2,
+			asset_out: HDX
+		}];
+	}: {
+		Router::force_insert_route(
+			RawOrigin::Root.into(),
+			AssetPair::new(asset_6, HDX),
+			route.clone(),
+		)?;
+	}
+	verify {
+
+		let stored_route = Router::route(AssetPair::new(HDX, asset_6)).unwrap();
+		assert_eq!(inverse_route(stored_route.to_vec()), route);
+	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::NativeExistentialDeposit;
 	use orml_benchmarking::impl_benchmark_test_suite;
+	use sp_runtime::BuildStorage;
 
 	fn new_test_ext() -> sp_io::TestExternalities {
-		let t: sp_io::TestExternalities = frame_system::GenesisConfig::default()
-			.build_storage::<crate::Runtime>()
-			.unwrap()
-			.into();
-		t
+		let mut t = frame_system::GenesisConfig::<Runtime>::default()
+			.build_storage()
+			.unwrap();
+
+		pallet_asset_registry::GenesisConfig::<crate::Runtime> {
+			registered_assets: vec![
+				(
+					Some(1),
+					Some(b"LRNA".to_vec().try_into().unwrap()),
+					1_000u128,
+					None,
+					None,
+					None,
+					true,
+				),
+				(
+					Some(2),
+					Some(b"DAI".to_vec().try_into().unwrap()),
+					1_000u128,
+					None,
+					None,
+					None,
+					true,
+				),
+			],
+			native_asset_name: b"HDX".to_vec().try_into().unwrap(),
+			native_existential_deposit: NativeExistentialDeposit::get(),
+			native_decimals: 12,
+			native_symbol: b"HDX".to_vec().try_into().unwrap(),
+		}
+		.assimilate_storage(&mut t)
+		.unwrap();
+
+		sp_io::TestExternalities::new(t)
 	}
 
 	impl_benchmark_test_suite!(new_test_ext(),);

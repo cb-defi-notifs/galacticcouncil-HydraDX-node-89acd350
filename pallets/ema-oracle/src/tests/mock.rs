@@ -18,25 +18,25 @@
 use crate as ema_oracle;
 use crate::Config;
 use ema_oracle::OracleEntry;
-use frame_support::bounded_vec;
 use frame_support::pallet_prelude::ConstU32;
 use frame_support::parameter_types;
 use frame_support::sp_runtime::{
-	testing::Header,
+	bounded_vec,
 	traits::{BlakeTwo256, IdentityLookup},
+	BuildStorage,
 };
-use frame_support::traits::{Everything, GenesisBuild};
+use frame_support::traits::{Contains, Everything};
 use frame_support::BoundedVec;
+use frame_system::EnsureRoot;
 use hydradx_traits::OraclePeriod::{self, *};
+use hydradx_traits::Source;
 use hydradx_traits::{AssetPairAccountIdFor, Liquidity, Volume};
 use sp_core::H256;
 
-pub use hydradx_traits::Source;
-
 use crate::types::{AssetId, Balance, Price};
 pub type BlockNumber = u64;
+pub type AccountId = u64;
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
 type Block = frame_system::mocking::MockBlock<Test>;
 
 use crate::MAX_PERIODS;
@@ -44,6 +44,8 @@ use crate::MAX_PERIODS;
 pub const HDX: AssetId = 1_000;
 pub const DOT: AssetId = 2_000;
 pub const ACA: AssetId = 3_000;
+// ensure this asset id is not used in the benchmarks, otherwise the benchmarking tests fail
+pub const INSUFFICIENT_ASSET: AssetId = 123_456;
 
 pub const ORACLE_ENTRY_1: OracleEntry<BlockNumber> = OracleEntry {
 	price: Price::new(2_000, 1_000),
@@ -69,10 +71,7 @@ pub const ORACLE_ENTRY_2: OracleEntry<BlockNumber> = OracleEntry {
 };
 
 frame_support::construct_runtime!(
-	pub enum Test where
-	 Block = Block,
-	 NodeBlock = Block,
-	 UncheckedExtrinsic = UncheckedExtrinsic,
+	pub enum Test
 	 {
 		 System: frame_system,
 		 EmaOracle: ema_oracle,
@@ -90,13 +89,12 @@ impl frame_system::Config for Test {
 	type BlockLength = ();
 	type RuntimeOrigin = RuntimeOrigin;
 	type RuntimeCall = RuntimeCall;
-	type Index = u64;
-	type BlockNumber = BlockNumber;
+	type Nonce = u64;
+	type Block = Block;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
 	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = BlockHashCount;
 	type DbWeight = ();
@@ -108,7 +106,7 @@ impl frame_system::Config for Test {
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
 	type OnSetCode = ();
-	type MaxConsumers = frame_support::traits::ConstU32<16>;
+	type MaxConsumers = ConstU32<16>;
 }
 
 pub struct AssetPairAccountIdTest();
@@ -128,12 +126,23 @@ parameter_types! {
 	pub SupportedPeriods: BoundedVec<OraclePeriod, ConstU32<MAX_PERIODS>> = bounded_vec![LastBlock, TenMinutes, Day, Week];
 }
 
+pub struct OracleWhitelist;
+impl Contains<(Source, AssetId, AssetId)> for OracleWhitelist {
+	fn contains(t: &(Source, AssetId, AssetId)) -> bool {
+		(t.1 != INSUFFICIENT_ASSET && t.2 != INSUFFICIENT_ASSET) || ema_oracle::OracleWhitelist::<Test>::contains(t)
+	}
+}
+
 impl Config for Test {
 	type RuntimeEvent = RuntimeEvent;
-	type WeightInfo = ();
+	type AuthorityOrigin = EnsureRoot<AccountId>;
 	type BlockNumberProvider = System;
 	type SupportedPeriods = SupportedPeriods;
+	type OracleWhitelist = OracleWhitelist;
 	type MaxUniqueEntries = ConstU32<45>;
+	#[cfg(feature = "runtime-benchmarks")]
+	type BenchmarkHelper = ();
+	type WeightInfo = ();
 }
 
 pub type InitialDataEntry = (Source, (AssetId, AssetId), Price, Liquidity<Balance>);
@@ -150,18 +159,22 @@ impl ExtBuilder {
 	}
 
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default().build_storage::<Test>().unwrap();
-		GenesisBuild::<Test>::assimilate_storage(
-			&crate::GenesisConfig {
-				initial_data: self.initial_data,
-			},
-			&mut t,
-		)
+		let mut t = frame_system::GenesisConfig::<Test>::default().build_storage().unwrap();
+		crate::GenesisConfig::<Test> {
+			initial_data: self.initial_data,
+			..Default::default()
+		}
+		.assimilate_storage(&mut t)
 		.unwrap();
+
 		let mut ext: sp_io::TestExternalities = t.into();
 		ext.execute_with(|| {
-			System::set_block_number(0);
+			System::set_block_number(1);
 		});
 		ext
 	}
+}
+
+pub fn expect_events(e: Vec<RuntimeEvent>) {
+	test_utils::expect_events::<RuntimeEvent, Test>(e);
 }

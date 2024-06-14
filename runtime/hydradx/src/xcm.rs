@@ -1,6 +1,10 @@
 use super::*;
+use sp_std::marker::PhantomData;
 
-use hydradx_adapters::{MultiCurrencyTrader, ReroutingMultiCurrencyAdapter, ToFeeReceiver};
+use codec::MaxEncodedLen;
+use hydradx_adapters::{
+	MultiCurrencyTrader, RelayChainBlockNumberProvider, ReroutingMultiCurrencyAdapter, ToFeeReceiver,
+};
 use pallet_transaction_multi_payment::DepositAll;
 use primitives::AssetId; // shadow glob import of polkadot_xcm::v3::prelude::AssetId
 
@@ -8,36 +12,47 @@ use cumulus_primitives_core::ParaId;
 use frame_support::{
 	parameter_types,
 	sp_runtime::traits::{AccountIdConversion, Convert},
-	traits::{ConstU32, Contains, Everything, Get, Nothing},
+	traits::{ConstU32, Contains, ContainsPair, Everything, Get, Nothing},
 	PalletId,
 };
 use frame_system::EnsureRoot;
+use hydradx_adapters::xcm_exchange::XcmAssetExchanger;
+use hydradx_adapters::xcm_execute_filter::AllowTransferAndSwap;
 use orml_traits::{location::AbsoluteReserveProvider, parameter_type_with_key};
 use orml_xcm_support::{DepositToAlternative, IsNativeConcrete, MultiNativeAsset};
+use pallet_evm::AddressMapping;
 use pallet_xcm::XcmPassthrough;
-use polkadot_parachain::primitives::Sibling;
+use polkadot_parachain::primitives::{RelayChainBlockNumber, Sibling};
 use polkadot_xcm::v3::{prelude::*, Weight as XcmWeight};
+use primitives::Price;
 use scale_info::TypeInfo;
 use xcm_builder::{
 	AccountId32Aliases, AllowKnownQueryResponses, AllowSubscriptionsFrom, AllowTopLevelPaidExecutionFrom,
-	EnsureXcmOrigin, FixedWeightBounds, ParentIsPreset, RelayChainAsNative, SiblingParachainAsNative,
-	SiblingParachainConvertsVia, SignedAccountId32AsNative, SignedToAccountId32, SovereignSignedViaLocation,
-	TakeWeightCredit,
+	DescribeAllTerminal, DescribeFamily, EnsureXcmOrigin, FixedWeightBounds, HashedDescription, ParentIsPreset,
+	RelayChainAsNative, SiblingParachainAsNative, SiblingParachainConvertsVia, SignedAccountId32AsNative,
+	SignedToAccountId32, SovereignSignedViaLocation, TakeWeightCredit, WithComputedOrigin,
 };
 use xcm_executor::{Config, XcmExecutor};
 
-#[derive(Debug, Default, Encode, Decode, Clone, PartialEq, Eq, TypeInfo)]
+#[derive(Debug, Default, Encode, Decode, Clone, PartialEq, Eq, TypeInfo, MaxEncodedLen)]
 pub struct AssetLocation(pub polkadot_xcm::v3::MultiLocation);
 
 pub type LocalOriginToLocation = SignedToAccountId32<RuntimeOrigin, AccountId, RelayNetwork>;
 
 pub type Barrier = (
 	TakeWeightCredit,
-	AllowTopLevelPaidExecutionFrom<Everything>,
 	// Expected responses are OK.
 	AllowKnownQueryResponses<PolkadotXcm>,
-	// Subscriptions for version tracking are OK.
-	AllowSubscriptionsFrom<Everything>,
+	// Evaluate the barriers with the effective origin
+	WithComputedOrigin<
+		(
+			AllowTopLevelPaidExecutionFrom<Everything>,
+			// Subscriptions for version tracking are OK.
+			AllowSubscriptionsFrom<Everything>,
+		),
+		UniversalLocation,
+		ConstU32<8>,
+	>,
 );
 
 parameter_types! {
@@ -75,12 +90,43 @@ pub type XcmOriginToCallOrigin = (
 
 parameter_types! {
 	/// The amount of weight an XCM operation takes. This is a safe overestimate.
-	pub const BaseXcmWeight: XcmWeight = XcmWeight::from_ref_time(100_000_000);
+	pub const BaseXcmWeight: XcmWeight = XcmWeight::from_parts(100_000_000, 0);
 	pub const MaxInstructions: u32 = 100;
 	pub const MaxAssetsForTransfer: usize = 2;
 
+	pub TempAccountForXcmAssetExchange: AccountId = [42; 32].into();
+	pub const MaxXcmDepth: u16 = 5;
+	pub const MaxNumberOfInstructions: u16 = 100;
+
 	pub UniversalLocation: InteriorMultiLocation = X2(GlobalConsensus(RelayNetwork::get()), Parachain(ParachainInfo::parachain_id().into()));
+
+	pub AssetHubLocation: MultiLocation = (Parent, Parachain(1000)).into();
 }
+
+/// Matches foreign assets from a given origin.
+/// Foreign assets are assets bridged from other consensus systems. i.e parents > 1.
+pub struct IsForeignNativeAssetFrom<Origin>(PhantomData<Origin>);
+impl<Origin> ContainsPair<MultiAsset, MultiLocation> for IsForeignNativeAssetFrom<Origin>
+where
+	Origin: Get<MultiLocation>,
+{
+	fn contains(asset: &MultiAsset, origin: &MultiLocation) -> bool {
+		let loc = Origin::get();
+		&loc == origin
+			&& matches!(
+				asset,
+				MultiAsset {
+					id: Concrete(MultiLocation { parents: 2, .. }),
+					fun: Fungible(_),
+				},
+			)
+	}
+}
+
+pub type Reserves = (
+	IsForeignNativeAssetFrom<AssetHubLocation>,
+	MultiNativeAsset<AbsoluteReserveProvider>,
+);
 
 pub struct XcmConfig;
 impl Config for XcmConfig {
@@ -89,7 +135,7 @@ impl Config for XcmConfig {
 
 	type AssetTransactor = LocalAssetTransactor;
 	type OriginConverter = XcmOriginToCallOrigin;
-	type IsReserve = MultiNativeAsset<AbsoluteReserveProvider>;
+	type IsReserve = Reserves;
 
 	type IsTeleporter = (); // disabled
 	type UniversalLocation = UniversalLocation;
@@ -112,7 +158,7 @@ impl Config for XcmConfig {
 	type ResponseHandler = PolkadotXcm;
 	type AssetTrap = PolkadotXcm;
 	type AssetLocker = ();
-	type AssetExchanger = ();
+	type AssetExchanger = XcmAssetExchanger<Runtime, TempAccountForXcmAssetExchange, CurrencyIdConvert, Currencies>;
 	type AssetClaims = PolkadotXcm;
 	type SubscriptionService = PolkadotXcm;
 	type PalletInstancesInfo = AllPalletsWithSystem;
@@ -122,11 +168,18 @@ impl Config for XcmConfig {
 	type UniversalAliases = Nothing;
 	type CallDispatcher = RuntimeCall;
 	type SafeCallFilter = SafeCallFilter;
+	type Aliasers = Nothing;
 }
 
 impl cumulus_pallet_xcm::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type XcmExecutor = XcmExecutor<XcmConfig>;
+}
+
+parameter_types! {
+	pub const MaxDeferredMessages: u32 = 20;
+	pub const MaxDeferredBuckets: u32 = 1_000;
+	pub const MaxBucketsProcessed: u32 = 3;
 }
 
 impl cumulus_pallet_xcmp_queue::Config for Runtime {
@@ -139,6 +192,12 @@ impl cumulus_pallet_xcmp_queue::Config for Runtime {
 	type ControllerOriginConverter = XcmOriginToCallOrigin;
 	type PriceForSiblingDelivery = ();
 	type WeightInfo = weights::xcmp_queue::HydraWeight<Runtime>;
+	type ExecuteDeferredOrigin = EnsureRoot<AccountId>;
+	type MaxDeferredMessages = MaxDeferredMessages;
+	type MaxDeferredBuckets = MaxDeferredBuckets;
+	type MaxBucketsProcessed = MaxBucketsProcessed;
+	type RelayChainBlockNumberProvider = RelayChainBlockNumberProvider<Runtime>;
+	type XcmDeferFilter = XcmRateLimiter;
 }
 
 impl cumulus_pallet_dmp_queue::Config for Runtime {
@@ -147,9 +206,15 @@ impl cumulus_pallet_dmp_queue::Config for Runtime {
 	type ExecuteOverweightOrigin = EnsureRoot<AccountId>;
 }
 
+const ASSET_HUB_PARA_ID: u32 = 1000;
+
 parameter_type_with_key! {
-	pub ParachainMinFee: |_location: MultiLocation| -> Option<u128> {
-		None
+	pub ParachainMinFee: |location: MultiLocation| -> Option<u128> {
+		#[allow(clippy::match_ref_pats)] // false positive
+		match (location.parents, location.first_interior()) {
+			(1, Some(Parachain(ASSET_HUB_PARA_ID))) => Some(50_000_000),
+			_ => None,
+		}
 	};
 }
 
@@ -191,7 +256,7 @@ impl pallet_xcm::Config for Runtime {
 	type SendXcmOrigin = EnsureXcmOrigin<RuntimeOrigin, LocalOriginToLocation>;
 	type XcmRouter = XcmRouter;
 	type ExecuteXcmOrigin = EnsureXcmOrigin<RuntimeOrigin, LocalOriginToLocation>;
-	type XcmExecuteFilter = Everything;
+	type XcmExecuteFilter = AllowTransferAndSwap<MaxXcmDepth, MaxNumberOfInstructions, RuntimeCall>;
 	type XcmExecutor = XcmExecutor<XcmConfig>;
 	type XcmTeleportFilter = Nothing;
 	type XcmReserveTransferFilter = Everything;
@@ -207,9 +272,45 @@ impl pallet_xcm::Config for Runtime {
 	type WeightInfo = weights::xcm::HydraWeight<Runtime>;
 	#[cfg(feature = "runtime-benchmarks")]
 	type ReachableDest = ReachableDest;
+	type AdminOrigin = MajorityOfCouncil;
+	type MaxRemoteLockConsumers = ConstU32<0>;
+	type RemoteLockConsumerIdentifier = ();
+}
+
+#[test]
+fn defer_duration_configuration() {
+	use sp_runtime::{traits::One, FixedPointNumber, FixedU128};
+	/// Calculate the configuration value for the defer duration based on the desired defer duration and
+	/// the threshold percentage when to start deferring.
+	/// - `defer_by`: the desired defer duration when reaching the rate limit
+	/// - `a``: the fraction of the rate limit where we start deferring, e.g. 0.9
+	fn defer_duration(defer_by: u32, a: FixedU128) -> u32 {
+		assert!(a < FixedU128::one());
+		// defer_by * a / (1 - a)
+		(FixedU128::one() / (FixedU128::one() - a)).saturating_mul_int(a.saturating_mul_int(defer_by))
+	}
+	assert_eq!(
+		defer_duration(600 * 4, FixedU128::from_rational(9, 10)),
+		DeferDuration::get()
+	);
+}
+parameter_types! {
+	pub DeferDuration: RelayChainBlockNumber = 600 * 36; // 36 hours
+	pub MaxDeferDuration: RelayChainBlockNumber = 600 * 24 * 10; // 10 days
+}
+
+impl pallet_xcm_rate_limiter::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type AssetId = AssetId;
+	type DeferDuration = DeferDuration;
+	type MaxDeferDuration = MaxDeferDuration;
+	type RelayBlockNumberProvider = RelayChainBlockNumberProvider<Runtime>;
+	type CurrencyIdConvert = CurrencyIdConvert;
+	type RateLimitFor = pallet_asset_registry::XcmRateLimitsInRegistry<Runtime>;
 }
 
 pub struct CurrencyIdConvert;
+use crate::evm::ExtendedAddressMapping;
 use primitives::constants::chain::CORE_ASSET_ID;
 
 impl Convert<AssetId, Option<MultiLocation>> for CurrencyIdConvert {
@@ -288,7 +389,29 @@ pub type LocationToAccountId = (
 	SiblingParachainConvertsVia<Sibling, AccountId>,
 	// Straight up local `AccountId32` origins just alias directly to `AccountId`.
 	AccountId32Aliases<RelayNetwork, AccountId>,
+	// Generate remote accounts according to polkadot standards
+	HashedDescription<AccountId, DescribeFamily<DescribeAllTerminal>>,
+	// Convert ETH to local substrate account
+	EvmAddressConversion<RelayNetwork>,
 );
+use xcm_executor::traits::ConvertLocation;
+
+/// Converts Account20 (ethereum) addresses to AccountId32 (substrate) addresses.
+pub struct EvmAddressConversion<Network>(PhantomData<Network>);
+impl<Network: Get<Option<NetworkId>>> ConvertLocation<AccountId> for EvmAddressConversion<Network> {
+	fn convert_location(location: &MultiLocation) -> Option<AccountId> {
+		match location {
+			MultiLocation {
+				parents: 0,
+				interior: X1(AccountKey20 { network: _, key }),
+			} => {
+				let account_32 = ExtendedAddressMapping::into_account_id(H160::from(key));
+				Some(account_32)
+			}
+			_ => None,
+		}
+	}
+}
 
 parameter_types! {
 	// The account which receives multi-currency tokens from failed attempts to deposit them
@@ -396,6 +519,7 @@ impl Contains<RuntimeCall> for SafeCallFilter {
 				| RuntimeCall::OmnipoolLiquidityMining(..)
 				| RuntimeCall::OTC(..)
 				| RuntimeCall::CircuitBreaker(..)
+				| RuntimeCall::Router(..)
 				| RuntimeCall::DCA(..)
 				| RuntimeCall::MultiTransactionPayment(..)
 				| RuntimeCall::Currencies(..)

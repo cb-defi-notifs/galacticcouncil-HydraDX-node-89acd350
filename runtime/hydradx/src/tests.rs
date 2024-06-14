@@ -4,14 +4,14 @@ use primitives::constants::{
 	time::{DAYS, HOURS},
 };
 
-use pallet_transaction_payment::Multiplier;
-
 use codec::Encode;
 use frame_support::{
 	dispatch::{DispatchClass, GetDispatchInfo},
 	sp_runtime::{traits::Convert, FixedPointNumber},
 	weights::WeightToFee,
 };
+use pallet_transaction_payment::Multiplier;
+use sp_runtime::BuildStorage;
 
 #[test]
 #[ignore]
@@ -24,7 +24,7 @@ fn full_block_cost() {
 	let max_weight = BlockWeights::get()
 		.get(DispatchClass::Normal)
 		.max_total
-		.unwrap_or(Weight::from_ref_time(1));
+		.unwrap_or(Weight::from_parts(1, 0));
 	let weight_fee = crate::WeightToFee::weight_to_fee(&max_weight);
 	assert_eq!(weight_fee, 375_600_961_538_250);
 
@@ -79,8 +79,8 @@ fn run_with_system_weight<F>(w: Weight, mut assertions: F)
 where
 	F: FnMut(),
 {
-	let mut t: sp_io::TestExternalities = frame_system::GenesisConfig::default()
-		.build_storage::<Runtime>()
+	let mut t: sp_io::TestExternalities = frame_system::GenesisConfig::<Runtime>::default()
+		.build_storage()
 		.unwrap()
 		.into();
 	t.execute_with(|| {
@@ -90,7 +90,6 @@ where
 }
 
 #[test]
-#[ignore]
 fn multiplier_can_grow_from_zero() {
 	let minimum_multiplier = MinimumMultiplier::get();
 	let target = TargetBlockFullness::get() * BlockWeights::get().get(DispatchClass::Normal).max_total.unwrap();
@@ -101,24 +100,64 @@ fn multiplier_can_grow_from_zero() {
 		assert!(next > minimum_multiplier, "{next:?} !>= {minimum_multiplier:?}");
 	})
 }
-
-#[test]
 #[ignore]
+#[test]
 fn multiplier_growth_simulator() {
 	// calculate the value of the fee multiplier after one hour of operation with fully loaded blocks
+	let max_multiplier = MaximumMultiplier::get();
+	println!("max multiplier = {max_multiplier:?}");
+
 	let mut multiplier = Multiplier::saturating_from_integer(1);
 	let block_weight = BlockWeights::get().get(DispatchClass::Normal).max_total.unwrap();
 	for _block_num in 1..=HOURS {
 		run_with_system_weight(block_weight, || {
 			let next = SlowAdjustingFeeUpdate::<Runtime>::convert(multiplier);
 			// ensure that it is growing as well.
-			assert!(next > multiplier, "{next:?} !>= {multiplier:?}");
+			//assert!(next > multiplier, "{next:?} !>= {multiplier:?}");
+			println!("multiplier = {multiplier:?}");
 			multiplier = next;
 		});
 	}
 	println!("multiplier = {multiplier:?}");
 }
+#[ignore]
+#[test]
+fn fee_growth_simulator() {
+	use frame_support::traits::OnFinalize;
+	// calculate the value of the fee multiplier after one hour of operation with fully loaded blocks
+	let max_multiplier = MaximumMultiplier::get();
+	println!("--- FEE GROWTH SIMULATOR STARTS ---");
 
+	println!("With max multiplier = {max_multiplier:?}");
+
+	let mut multiplier = Multiplier::saturating_from_integer(1);
+	let block_weight = BlockWeights::get().get(DispatchClass::Normal).max_total.unwrap();
+	for _block_num in 1..=HOURS {
+		run_with_system_weight(block_weight, || {
+			let b = crate::System::block_number();
+
+			let call = pallet_omnipool::Call::<Runtime>::sell {
+				asset_in: 2,
+				asset_out: 0,
+				amount: 1_000_000_000_000,
+				min_buy_amount: 0,
+			};
+			let call_len = call.encoded_size() as u32;
+			let info = call.get_dispatch_info();
+
+			let next = TransactionPayment::next_fee_multiplier();
+			let call_fee = TransactionPayment::compute_fee(call_len, &info, 0);
+
+			<pallet_transaction_payment::Pallet<Runtime> as OnFinalize<BlockNumber>>::on_finalize(b + 1);
+			crate::System::set_block_number(b + 1);
+
+			//let next = SlowAdjustingFeeUpdate::<Runtime>::convert(multiplier);
+			println!("Trade fee = {call_fee:?} with multiplier = {multiplier:?}");
+			multiplier = next;
+		});
+	}
+	println!("multiplier = {multiplier:?}");
+}
 #[test]
 #[ignore]
 fn max_multiplier() {

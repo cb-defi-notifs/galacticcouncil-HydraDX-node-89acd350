@@ -115,7 +115,7 @@ use frame_system::pallet_prelude::BlockNumberFor;
 use sp_runtime::ArithmeticError;
 
 use hydra_dx_math::liquidity_mining as math;
-use hydradx_traits::{liquidity_mining::PriceAdjustment, pools::DustRemovalAccountWhitelist, registry::Registry};
+use hydradx_traits::{liquidity_mining::PriceAdjustment, pools::DustRemovalAccountWhitelist, registry::Inspect};
 use orml_traits::{GetByKey, MultiCurrency};
 use scale_info::TypeInfo;
 use sp_arithmetic::{
@@ -128,7 +128,7 @@ use sp_std::{
 	vec::Vec,
 };
 
-type PeriodOf<T> = <T as frame_system::Config>::BlockNumber;
+type PeriodOf<T> = BlockNumberFor<T>;
 
 //WARN: MIN_YIELD_FARM_MULTIPLIER.check_mul_int(MIN_DEPOSIT) >= 1. This rule is important otherwise
 //non-zero deposit can result in a zero stake in global-farm and farm can be falsely identified as
@@ -143,7 +143,6 @@ pub mod pallet {
 	use super::*;
 
 	#[pallet::pallet]
-	#[pallet::generate_store(pub(crate) trait Store)]
 	pub struct Pallet<T, I = ()>(PhantomData<(T, I)>);
 
 	#[pallet::hooks]
@@ -157,11 +156,14 @@ pub mod pallet {
 	}
 
 	#[pallet::genesis_config]
-	#[cfg_attr(feature = "std", derive(Default))]
-	pub struct GenesisConfig {}
+	#[derive(frame_support::DefaultNoBound)]
+	pub struct GenesisConfig<T: Config<I>, I: 'static = ()> {
+		#[serde(skip)]
+		pub _phantom: PhantomData<(T, I)>,
+	}
 
 	#[pallet::genesis_build]
-	impl<T: Config<I>, I: 'static> GenesisBuild<T, I> for GenesisConfig {
+	impl<T: Config<I>, I: 'static> BuildGenesisConfig for GenesisConfig<T, I> {
 		fn build(&self) {
 			let pot = <Pallet<T, I>>::pot_account_id().unwrap();
 
@@ -183,16 +185,20 @@ pub mod pallet {
 		#[pallet::constant]
 		type PalletId: Get<PalletId>;
 
+		/// Treasury account to receive claimed rewards lower than ED
+		#[pallet::constant]
+		type TreasuryAccountId: Get<Self::AccountId>;
+
 		/// Minimum total rewards to distribute from global farm during liquidity mining.
 		#[pallet::constant]
 		type MinTotalFarmRewards: Get<Balance>;
 
 		/// Minimum number of periods to run liquidity mining program.
 		#[pallet::constant]
-		type MinPlannedYieldingPeriods: Get<Self::BlockNumber>;
+		type MinPlannedYieldingPeriods: Get<BlockNumberFor<Self>>;
 
 		/// The block number provider
-		type BlockNumberProvider: BlockNumberProvider<BlockNumber = Self::BlockNumber>;
+		type BlockNumberProvider: BlockNumberProvider<BlockNumber = BlockNumberFor<Self>>;
 
 		/// Id used to identify amm pool in liquidity mining pallet.
 		type AmmPoolId: Parameter + Member + Clone + FullCodec + MaxEncodedLen;
@@ -209,7 +215,7 @@ pub mod pallet {
 
 		/// Asset Registry - used to check if asset is correctly registered in asset registry and
 		/// provides information about existential deposit of the asset.
-		type AssetRegistry: Registry<Self::AssetId, Vec<u8>, Balance, DispatchError> + GetByKey<Self::AssetId, Balance>;
+		type AssetRegistry: Inspect<AssetId = Self::AssetId> + GetByKey<Self::AssetId, Balance>;
 
 		/// Account whitelist manager to exclude pool accounts from dusting mechanism.
 		type NonDustableWhitelistHandler: DustRemovalAccountWhitelist<Self::AccountId, Error = DispatchError>;
@@ -364,6 +370,9 @@ pub mod pallet {
 
 		/// Loyalty multiplier can't be greater than one.
 		InvalidLoyaltyMultiplier,
+
+		/// No existential deposit configured for asset in registry.
+		NoExistentialDepositForAsset,
 	}
 
 	impl<T, I> From<InconsistentStateError> for Error<T, I> {
@@ -1164,6 +1173,13 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 						)
 						.map_err(|_| ArithmeticError::Overflow)?;
 
+						//In case of low rewards and insufficient balance, we send rewards to treasury to prevent ED error
+						let ed = T::AssetRegistry::existential_deposit(global_farm.reward_currency).ok_or(
+							Error::<T, I>::InconsistentState(InconsistentStateError::NoExistentialDepositForAsset),
+						)?;
+						let should_send_reward_to_treasury =
+							rewards < ed && T::MultiCurrency::free_balance(global_farm.reward_currency, &who) < ed;
+
 						if !rewards.is_zero() {
 							yield_farm.left_to_distribute = yield_farm
 								.left_to_distribute
@@ -1180,13 +1196,28 @@ impl<T: Config<I>, I: 'static> Pallet<T, I> {
 							farm_entry.updated_at = current_period;
 
 							let pot = Self::pot_account_id().ok_or(Error::<T, I>::ErrorGetAccountId)?;
-							T::MultiCurrency::transfer(global_farm.reward_currency, &pot, &who, rewards)?;
+
+							if should_send_reward_to_treasury {
+								T::MultiCurrency::transfer(
+									global_farm.reward_currency,
+									&pot,
+									&T::TreasuryAccountId::get(),
+									rewards,
+								)?;
+							} else {
+								T::MultiCurrency::transfer(global_farm.reward_currency, &pot, &who, rewards)?;
+							}
 						}
 
+						let rewards_sent_for_user = if should_send_reward_to_treasury {
+							Zero::zero()
+						} else {
+							rewards
+						};
 						Ok((
 							global_farm.id,
 							global_farm.reward_currency,
-							rewards,
+							rewards_sent_for_user,
 							unclaimable_rewards,
 						))
 					})
@@ -1907,5 +1938,11 @@ impl<T: Config<I>, I: 'static> hydradx_traits::liquidity_mining::Mutate<T::Accou
 
 	fn get_global_farm_id(deposit_id: DepositId, yield_farm_id: YieldFarmId) -> Option<u32> {
 		Self::get_global_farm_id(deposit_id, yield_farm_id)
+	}
+}
+
+impl<T: Config<I>, I: 'static> hydradx_traits::liquidity_mining::Inspect<T::AccountId> for Pallet<T, I> {
+	fn pot_account() -> Option<T::AccountId> {
+		Self::pot_account_id()
 	}
 }

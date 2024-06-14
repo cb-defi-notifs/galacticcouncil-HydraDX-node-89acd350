@@ -22,9 +22,8 @@ use crate::tests::{create_bounded_vec, ScheduleBuilder};
 use crate::{Error, Event, Order};
 use frame_support::{assert_noop, assert_ok};
 use frame_system::pallet_prelude::BlockNumberFor;
-use hydradx_traits::router::PoolType;
+use hydradx_traits::router::{PoolType, Trade};
 use orml_traits::NamedMultiReservableCurrency;
-use pallet_route_executor::Trade;
 use pretty_assertions::assert_eq;
 use sp_runtime::DispatchError::BadOrigin;
 use std::ops::RangeInclusive;
@@ -262,7 +261,11 @@ fn schedule_should_emit_necessary_events() {
 
 			//Act
 			set_block_number(500);
-			assert_ok!(DCA::schedule(RuntimeOrigin::signed(ALICE), schedule, Option::None));
+			assert_ok!(DCA::schedule(
+				RuntimeOrigin::signed(ALICE),
+				schedule.clone(),
+				Option::None
+			));
 
 			//Assert
 			let schedule_id = 0;
@@ -276,6 +279,9 @@ fn schedule_should_emit_necessary_events() {
 				Event::Scheduled {
 					id: schedule_id,
 					who: ALICE,
+					period: schedule.period,
+					total_amount: schedule.total_amount,
+					order: schedule.order,
 				}
 				.into(),
 			]);
@@ -296,7 +302,11 @@ fn schedule_should_emit_necessary_events_when_multiple_schedules_are_created() {
 			set_block_number(500);
 
 			let schedule_id = 0;
-			assert_ok!(DCA::schedule(RuntimeOrigin::signed(ALICE), schedule, Option::None));
+			assert_ok!(DCA::schedule(
+				RuntimeOrigin::signed(ALICE),
+				schedule.clone(),
+				Option::None
+			));
 			expect_events(vec![
 				Event::ExecutionPlanned {
 					id: schedule_id,
@@ -307,6 +317,9 @@ fn schedule_should_emit_necessary_events_when_multiple_schedules_are_created() {
 				Event::Scheduled {
 					id: schedule_id,
 					who: ALICE,
+					period: schedule.period,
+					total_amount: schedule.total_amount,
+					order: schedule.order,
 				}
 				.into(),
 			]);
@@ -315,7 +328,7 @@ fn schedule_should_emit_necessary_events_when_multiple_schedules_are_created() {
 
 			assert_ok!(DCA::schedule(
 				RuntimeOrigin::signed(ALICE),
-				schedule2,
+				schedule2.clone(),
 				Option::Some(1000)
 			));
 			expect_events(vec![
@@ -328,6 +341,9 @@ fn schedule_should_emit_necessary_events_when_multiple_schedules_are_created() {
 				Event::Scheduled {
 					id: schedule_id2,
 					who: ALICE,
+					period: schedule2.period,
+					total_amount: schedule2.total_amount,
+					order: schedule2.order,
 				}
 				.into(),
 			]);
@@ -750,7 +766,7 @@ fn sell_schedule_should_work_when_total_amount_is_equal_to_amount_in_plus_fee() 
 		.execute_with(|| {
 			//Arrange
 			let amount_in = ONE;
-			let total_amount = amount_in + BUY_DCA_FEE_IN_NATIVE;
+			let total_amount = amount_in + SELL_DCA_FEE_IN_NATIVE;
 			let schedule = ScheduleBuilder::new()
 				.with_total_amount(total_amount)
 				.with_order(Order::Sell {
@@ -840,12 +856,13 @@ fn schedule_should_fail_when_wrong_user_is_specified_in_schedule() {
 }
 
 #[test]
-fn schedule_should_fail_when_no_routes_specified() {
+fn schedule_should_be_created_when_no_routes_specified() {
 	ExtBuilder::default()
 		.with_endowed_accounts(vec![(ALICE, HDX, 10000 * ONE)])
 		.build()
 		.execute_with(|| {
 			//Arrange
+			set_block_number(500);
 
 			let total_amount = 100 * ONE;
 			let schedule = ScheduleBuilder::new()
@@ -859,12 +876,8 @@ fn schedule_should_fail_when_no_routes_specified() {
 				})
 				.build();
 
-			//Act
-			set_block_number(500);
-			assert_noop!(
-				DCA::schedule(RuntimeOrigin::signed(ALICE), schedule, Option::None),
-				Error::<Test>::RouteNotSpecified
-			);
+			//Act and assert
+			assert_ok!(DCA::schedule(RuntimeOrigin::signed(ALICE), schedule, Option::None));
 		});
 }
 

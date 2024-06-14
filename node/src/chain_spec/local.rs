@@ -81,8 +81,24 @@ pub fn parachain_config() -> Result<ChainSpec, String> {
 				vec![],
 				// registered assets
 				vec![
-					(b"KSM".to_vec(), 1_000u128, Some(1)),
-					(b"KUSD".to_vec(), 1_000u128, Some(2)),
+					(
+						Some(1),
+						Some(b"KSM".to_vec().try_into().expect("Name is too long")),
+						1_000u128,
+						None,
+						None,
+						None,
+						true,
+					),
+					(
+						Some(2),
+						Some(b"KUSD".to_vec().try_into().expect("Name is too long")),
+						1_000u128,
+						None,
+						None,
+						None,
+						true,
+					),
 				],
 				// accepted assets
 				vec![(1, Price::from_float(0.0000212)), (2, Price::from_float(0.000806))],
@@ -128,6 +144,7 @@ pub fn parachain_config() -> Result<ChainSpec, String> {
 		Extensions {
 			relay_chain: "rococo-local".into(),
 			para_id: PARA_ID,
+			evm_since: 1,
 		},
 	))
 }

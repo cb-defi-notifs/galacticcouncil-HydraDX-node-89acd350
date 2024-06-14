@@ -16,7 +16,7 @@
 // limitations under the License.
 
 pub use crate as pallet_circuit_breaker;
-use frame_support::traits::{Contains, GenesisBuild};
+use frame_support::traits::Contains;
 pub use frame_support::traits::{Everything, OnFinalize};
 pub use frame_support::{assert_noop, assert_ok, parameter_types};
 
@@ -24,19 +24,17 @@ use frame_system::EnsureRoot;
 use hydra_dx_math::omnipool::types::BalanceUpdate;
 use orml_traits::{parameter_type_with_key, GetByKey};
 use sp_core::H256;
-use sp_runtime::traits::{ConstU128, ConstU32};
+use sp_runtime::traits::{ConstU128, ConstU32, Zero};
 use sp_runtime::DispatchResult;
 use sp_runtime::FixedU128;
 use sp_runtime::Permill;
 use sp_runtime::{
-	testing::Header,
 	traits::{BlakeTwo256, IdentityLookup},
-	DispatchError,
+	BuildStorage, DispatchError,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
 type Block = frame_system::mocking::MockBlock<Test>;
 
 pub type AccountId = u64;
@@ -81,10 +79,7 @@ thread_local! {
 }
 
 frame_support::construct_runtime!(
-	pub enum Test where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic,
+	pub enum Test
 	{
 		System: frame_system,
 		Balances: pallet_balances,
@@ -106,13 +101,12 @@ impl frame_system::Config for Test {
 	type DbWeight = ();
 	type RuntimeOrigin = RuntimeOrigin;
 	type RuntimeCall = RuntimeCall;
-	type Index = u64;
-	type BlockNumber = u64;
+	type Nonce = u64;
+	type Block = Block;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
 	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = BlockHashCount;
 	type Version = ();
@@ -164,6 +158,10 @@ impl pallet_balances::Config for Test {
 	type MaxLocks = ();
 	type MaxReserves = ConstU32<50>;
 	type ReserveIdentifier = [u8; 8];
+	type FreezeIdentifier = ();
+	type MaxFreezes = ();
+	type MaxHolds = ();
+	type RuntimeHoldReason = ();
 }
 
 parameter_type_with_key! {
@@ -189,7 +187,6 @@ impl orml_tokens::Config for Test {
 parameter_types! {
 	pub const HDXAssetId: AssetId = HDX;
 	pub const LRNAAssetId: AssetId = LRNA;
-	pub const DAIAssetId: AssetId = DAI;
 	pub const PosiitionCollectionId: u32= 1000;
 
 	pub ProtocolFee: Permill = PROTOCOL_FEE.with(|v| *v.borrow());
@@ -210,7 +207,6 @@ impl pallet_omnipool::Config for Test {
 	type Currency = Tokens;
 	type AuthorityOrigin = EnsureRoot<Self::AccountId>;
 	type HubAssetId = LRNAAssetId;
-	type StableCoinAssetId = DAIAssetId;
 	type WeightInfo = ();
 	type HdxAssetId = HDXAssetId;
 	type NFTCollectionId = PosiitionCollectionId;
@@ -231,7 +227,7 @@ impl pallet_omnipool::Config for Test {
 
 pub struct CircuitBreakerHooks<T>(PhantomData<T>);
 
-impl<T> OmnipoolHooks<RuntimeOrigin, AssetId, Balance> for CircuitBreakerHooks<T>
+impl<T> OmnipoolHooks<RuntimeOrigin, AccountId, AssetId, Balance> for CircuitBreakerHooks<T>
 where
 	// Lrna: Get<AssetId>,
 	T: Config + pallet_circuit_breaker::Config,
@@ -305,6 +301,15 @@ where
 	fn on_trade_weight() -> Weight {
 		todo!()
 	}
+
+	fn on_trade_fee(
+		_fee_account: AccountId,
+		_trader: AccountId,
+		_asset: AssetId,
+		_amount: Balance,
+	) -> Result<Balance, Self::Error> {
+		Ok(Balance::zero())
+	}
 }
 
 use frame_support::traits::tokens::nonfungibles::{Create, Inspect, Mutate};
@@ -358,31 +363,49 @@ impl<AccountId: From<u64> + Into<u64> + Copy> Mutate<AccountId> for DummyNFT {
 }
 
 use crate::Config;
-use hydradx_traits::Registry;
+use hydradx_traits::registry::{AssetKind, Inspect as InspectRegistry};
 use pallet_omnipool::traits::{AssetInfo, ExternalPriceProvider, OmnipoolHooks};
 
 pub struct DummyRegistry<T>(sp_std::marker::PhantomData<T>);
 
-impl<T: Config> Registry<T::AssetId, Vec<u8>, Balance, DispatchError> for DummyRegistry<T>
+impl<T: Config> InspectRegistry for DummyRegistry<T>
 where
 	T::AssetId: Into<AssetId> + From<u32>,
 {
+	type AssetId = T::AssetId;
+	type Location = u8;
+
+	fn is_sufficient(_id: Self::AssetId) -> bool {
+		unimplemented!()
+	}
+
+	fn asset_type(_id: Self::AssetId) -> Option<AssetKind> {
+		unimplemented!()
+	}
+
+	fn decimals(_id: Self::AssetId) -> Option<u8> {
+		unimplemented!()
+	}
+
 	fn exists(asset_id: T::AssetId) -> bool {
 		let asset = REGISTERED_ASSETS.with(|v| v.borrow().get(&(asset_id.into())).copied());
-		matches!(asset, Some(_))
+		asset.is_some()
 	}
 
-	fn retrieve_asset(_name: &Vec<u8>) -> Result<T::AssetId, DispatchError> {
-		Ok(T::AssetId::default())
+	fn is_banned(_id: Self::AssetId) -> bool {
+		unimplemented!()
 	}
 
-	fn create_asset(_name: &Vec<u8>, _existential_deposit: Balance) -> Result<T::AssetId, DispatchError> {
-		let assigned = REGISTERED_ASSETS.with(|v| {
-			let l = v.borrow().len();
-			v.borrow_mut().insert(l as u32, l as u32);
-			l as u32
-		});
-		Ok(T::AssetId::from(assigned))
+	fn asset_symbol(_id: Self::AssetId) -> Option<Vec<u8>> {
+		unimplemented!()
+	}
+
+	fn asset_name(_id: Self::AssetId) -> Option<Vec<u8>> {
+		unimplemented!()
+	}
+
+	fn existential_deposit(_id: Self::AssetId) -> Option<u128> {
+		Some(1u128)
 	}
 }
 
@@ -397,7 +420,6 @@ pub struct ExtBuilder {
 	register_stable_asset: bool,
 	max_in_ratio: Balance,
 	max_out_ratio: Balance,
-	tvl_cap: Balance,
 	init_pool: Option<(FixedU128, FixedU128)>,
 	pool_tokens: Vec<(AssetId, FixedU128, AccountId, Balance)>,
 	max_net_trade_volume_limit_per_block: (u32, u32),
@@ -457,7 +479,6 @@ impl Default for ExtBuilder {
 			max_net_trade_volume_limit_per_block: (2_000, 10_000),
 			max_add_liquidity_limit_per_block: Some((4_000, 10_000)),
 			max_remove_liquidity_limit_per_block: Some((2_000, 10_000)),
-			tvl_cap: u128::MAX,
 		}
 	}
 }
@@ -508,7 +529,7 @@ impl ExtBuilder {
 	}
 
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default().build_storage::<Test>().unwrap();
+		let mut t = frame_system::GenesisConfig::<Test>::default().build_storage().unwrap();
 
 		// Add DAi and HDX as pre-registered assets
 		REGISTERED_ASSETS.with(|v| {
@@ -568,18 +589,21 @@ impl ExtBuilder {
 
 		let mut r: sp_io::TestExternalities = t.into();
 
-		r.execute_with(|| {
-			assert_ok!(Omnipool::set_tvl_cap(RuntimeOrigin::root(), self.tvl_cap,));
-		});
-
 		if let Some((stable_price, native_price)) = self.init_pool {
 			r.execute_with(|| {
-				assert_ok!(Omnipool::initialize_pool(
+				assert_ok!(Omnipool::add_token(
 					RuntimeOrigin::root(),
-					stable_price,
+					HDXAssetId::get(),
 					native_price,
 					Permill::from_percent(100),
-					Permill::from_percent(100)
+					Omnipool::protocol_account(),
+				));
+				assert_ok!(Omnipool::add_token(
+					RuntimeOrigin::root(),
+					DAI,
+					stable_price,
+					Permill::from_percent(100),
+					Omnipool::protocol_account(),
 				));
 
 				for (asset_id, price, owner, amount) in self.pool_tokens {

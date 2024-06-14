@@ -1,36 +1,30 @@
 #![cfg(test)]
 
 use crate::polkadot_test_net::*;
-
 use frame_support::{
 	assert_ok,
-	traits::{OnFinalize, OnInitialize},
+	dispatch::DispatchInfo,
+	sp_runtime::{traits::SignedExtension, FixedU128, Permill},
+	weights::Weight,
 };
-
-use hydradx_runtime::{Balances, Currencies, MultiTransactionPayment, RuntimeOrigin, Tokens};
-
-use frame_support::dispatch::{DispatchInfo, Weight};
+use frame_system::RawOrigin;
+use hydradx_runtime::{
+	Balances, Currencies, EmaOracle, MultiTransactionPayment, Omnipool, Router, RuntimeOrigin, Tokens,
+};
 use orml_traits::currency::MultiCurrency;
-use polkadot_primitives::v2::BlockNumber;
-use sp_runtime::traits::SignedExtension;
+use primitives::Price;
+
+use hydradx_adapters::OraclePriceProvider;
+use hydradx_traits::{
+	evm::InspectEvmAccounts,
+	pools::SpotPriceProvider,
+	router::{AssetPair, RouteProvider},
+	OraclePeriod, PriceOracle,
+};
 use xcm_emulator::TestExt;
 
-pub fn hydra_run_to_block(to: BlockNumber) {
-	while hydradx_runtime::System::block_number() < to {
-		let b = hydradx_runtime::System::block_number();
-
-		hydradx_runtime::System::on_finalize(b);
-		hydradx_runtime::MultiTransactionPayment::on_finalize(b);
-
-		hydradx_runtime::System::on_initialize(b + 1);
-		hydradx_runtime::MultiTransactionPayment::on_initialize(b + 1);
-
-		hydradx_runtime::System::set_block_number(b + 1);
-	}
-}
-
 #[test]
-fn non_native_fee_payment_works_with_omnipool_spot_price() {
+fn non_native_fee_payment_works_with_oracle_price_based_on_onchain_route() {
 	TestNet::reset();
 
 	Hydra::execute_with(|| {
@@ -39,7 +33,7 @@ fn non_native_fee_payment_works_with_omnipool_spot_price() {
 		);
 
 		let info = DispatchInfo {
-			weight: Weight::from_ref_time(106_957_000),
+			weight: Weight::from_parts(106_957_000, 0),
 			..Default::default()
 		};
 		let len: usize = 10;
@@ -53,18 +47,20 @@ fn non_native_fee_payment_works_with_omnipool_spot_price() {
 			)
 		);
 		let bob_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
-		assert_eq!(bob_balance, 999_959);
+		assert_eq!(bob_balance, 999991);
 
-		assert_ok!(hydradx_runtime::Balances::set_balance(
+		assert_ok!(hydradx_runtime::Balances::force_set_balance(
 			hydradx_runtime::RuntimeOrigin::root(),
 			ALICE.into(),
 			2_000_000_000_000 * UNITS,
-			0,
 		));
 
 		init_omnipool();
 
-		hydra_run_to_block(2);
+		hydradx_run_to_block(4);
+
+		let dave_balance = hydradx_runtime::Tokens::free_balance(DAI, &AccountId::from(DAVE));
+		assert_eq!(dave_balance, 1_000_000_000_000_000_000_000);
 
 		let call = hydradx_runtime::RuntimeCall::MultiTransactionPayment(
 			pallet_transaction_multi_payment::Call::set_currency { currency: DAI },
@@ -80,7 +76,199 @@ fn non_native_fee_payment_works_with_omnipool_spot_price() {
 		);
 
 		let dave_balance = hydradx_runtime::Tokens::free_balance(DAI, &AccountId::from(DAVE));
-		assert_eq!(dave_balance, 999_991_799_671_574_511_701); //Omnipool spot price
+		assert_eq!(dave_balance, 999_998_091_159_455_519_200);
+	});
+}
+
+#[test]
+fn set_currency_should_work_in_batch_transaction_when_first_tx() {
+	TestNet::reset();
+
+	// batch
+	Hydra::execute_with(|| {
+		let first_inner_call = hydradx_runtime::RuntimeCall::MultiTransactionPayment(
+			pallet_transaction_multi_payment::Call::set_currency { currency: BTC },
+		);
+		let second_inner_call = hydradx_runtime::RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+		let call = hydradx_runtime::RuntimeCall::Utility(pallet_utility::Call::batch {
+			calls: vec![first_inner_call, second_inner_call],
+		});
+
+		let info = DispatchInfo {
+			weight: Weight::from_parts(106_957_000, 0),
+			..Default::default()
+		};
+		let len: usize = 10;
+
+		assert_ok!(
+			pallet_transaction_payment::ChargeTransactionPayment::<hydradx_runtime::Runtime>::from(0).pre_dispatch(
+				&AccountId::from(BOB),
+				&call,
+				&info,
+				len,
+			)
+		);
+		let bob_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+		assert_eq!(bob_balance, 999991);
+	});
+
+	TestNet::reset();
+
+	// batch_all
+	Hydra::execute_with(|| {
+		let first_inner_call = hydradx_runtime::RuntimeCall::MultiTransactionPayment(
+			pallet_transaction_multi_payment::Call::set_currency { currency: BTC },
+		);
+		let second_inner_call = hydradx_runtime::RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+		let call = hydradx_runtime::RuntimeCall::Utility(pallet_utility::Call::batch_all {
+			calls: vec![first_inner_call, second_inner_call],
+		});
+
+		let info = DispatchInfo {
+			weight: Weight::from_parts(106_957_000, 0),
+			..Default::default()
+		};
+		let len: usize = 10;
+
+		assert_ok!(
+			pallet_transaction_payment::ChargeTransactionPayment::<hydradx_runtime::Runtime>::from(0).pre_dispatch(
+				&AccountId::from(BOB),
+				&call,
+				&info,
+				len,
+			)
+		);
+		let bob_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+		assert_eq!(bob_balance, 999991);
+	});
+
+	TestNet::reset();
+
+	// batch_all
+	Hydra::execute_with(|| {
+		let first_inner_call = hydradx_runtime::RuntimeCall::MultiTransactionPayment(
+			pallet_transaction_multi_payment::Call::set_currency { currency: BTC },
+		);
+		let second_inner_call = hydradx_runtime::RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+		let call = hydradx_runtime::RuntimeCall::Utility(pallet_utility::Call::force_batch {
+			calls: vec![first_inner_call, second_inner_call],
+		});
+
+		let info = DispatchInfo {
+			weight: Weight::from_parts(106_957_000, 0),
+			..Default::default()
+		};
+		let len: usize = 10;
+
+		assert_ok!(
+			pallet_transaction_payment::ChargeTransactionPayment::<hydradx_runtime::Runtime>::from(0).pre_dispatch(
+				&AccountId::from(BOB),
+				&call,
+				&info,
+				len,
+			)
+		);
+		let bob_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+		assert_eq!(bob_balance, 999991);
+	});
+}
+
+#[test]
+fn set_currency_should_not_work_in_batch_transaction_when_not_first_tx() {
+	TestNet::reset();
+
+	// batch
+	Hydra::execute_with(|| {
+		let first_inner_call = hydradx_runtime::RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+		let second_inner_call = hydradx_runtime::RuntimeCall::MultiTransactionPayment(
+			pallet_transaction_multi_payment::Call::set_currency { currency: BTC },
+		);
+		let call = hydradx_runtime::RuntimeCall::Utility(pallet_utility::Call::batch {
+			calls: vec![first_inner_call, second_inner_call],
+		});
+
+		let info = DispatchInfo {
+			weight: Weight::from_parts(106_957_000, 0),
+			..Default::default()
+		};
+		let len: usize = 10;
+
+		let bob_initial_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+
+		assert_ok!(
+			pallet_transaction_payment::ChargeTransactionPayment::<hydradx_runtime::Runtime>::from(0).pre_dispatch(
+				&AccountId::from(BOB),
+				&call,
+				&info,
+				len,
+			)
+		);
+		let bob_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+		assert_eq!(bob_balance, bob_initial_balance);
+	});
+
+	TestNet::reset();
+
+	// batch_all
+	Hydra::execute_with(|| {
+		let first_inner_call = hydradx_runtime::RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+		let second_inner_call = hydradx_runtime::RuntimeCall::MultiTransactionPayment(
+			pallet_transaction_multi_payment::Call::set_currency { currency: BTC },
+		);
+		let call = hydradx_runtime::RuntimeCall::Utility(pallet_utility::Call::batch_all {
+			calls: vec![first_inner_call, second_inner_call],
+		});
+
+		let info = DispatchInfo {
+			weight: Weight::from_parts(106_957_000, 0),
+			..Default::default()
+		};
+		let len: usize = 10;
+
+		let bob_initial_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+
+		assert_ok!(
+			pallet_transaction_payment::ChargeTransactionPayment::<hydradx_runtime::Runtime>::from(0).pre_dispatch(
+				&AccountId::from(BOB),
+				&call,
+				&info,
+				len,
+			)
+		);
+		let bob_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+		assert_eq!(bob_balance, bob_initial_balance);
+	});
+
+	TestNet::reset();
+
+	// batch_all
+	Hydra::execute_with(|| {
+		let first_inner_call = hydradx_runtime::RuntimeCall::System(frame_system::Call::remark { remark: vec![] });
+		let second_inner_call = hydradx_runtime::RuntimeCall::MultiTransactionPayment(
+			pallet_transaction_multi_payment::Call::set_currency { currency: BTC },
+		);
+		let call = hydradx_runtime::RuntimeCall::Utility(pallet_utility::Call::force_batch {
+			calls: vec![first_inner_call, second_inner_call],
+		});
+
+		let info = DispatchInfo {
+			weight: Weight::from_parts(106_957_000, 0),
+			..Default::default()
+		};
+		let len: usize = 10;
+
+		let bob_initial_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+
+		assert_ok!(
+			pallet_transaction_payment::ChargeTransactionPayment::<hydradx_runtime::Runtime>::from(0).pre_dispatch(
+				&AccountId::from(BOB),
+				&call,
+				&info,
+				len,
+			)
+		);
+		let bob_balance = hydradx_runtime::Tokens::free_balance(BTC, &AccountId::from(BOB));
+		assert_eq!(bob_balance, bob_initial_balance);
 	});
 }
 
@@ -91,10 +279,7 @@ fn fee_currency_on_account_lifecycle() {
 	TestNet::reset();
 
 	Hydra::execute_with(|| {
-		assert_eq!(
-			MultiTransactionPayment::get_currency(&AccountId::from(HITCHHIKER)),
-			None
-		);
+		assert_eq!(MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)), None);
 
 		// ------------ set on create ------------
 		assert_ok!(Currencies::transfer(
@@ -109,7 +294,7 @@ fn fee_currency_on_account_lifecycle() {
 			50_000_000_000_000
 		);
 		assert_eq!(
-			MultiTransactionPayment::get_currency(&AccountId::from(HITCHHIKER)),
+			MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)),
 			Some(1)
 		);
 
@@ -121,10 +306,79 @@ fn fee_currency_on_account_lifecycle() {
 			false,
 		));
 
+		assert_eq!(MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)), None);
+	});
+}
+
+#[test]
+fn fee_currency_on_evm_account_lifecycle() {
+	TestNet::reset();
+
+	Hydra::execute_with(|| {
+		assert_eq!(MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)), None);
+
+		let evm_address = hydradx_runtime::EVMAccounts::evm_address(&Into::<AccountId>::into(HITCHHIKER));
+		let truncated_account: AccountId = hydradx_runtime::EVMAccounts::truncated_account_id(evm_address);
+
+		// ------------ set on create ------------
+		assert_ok!(Currencies::transfer(
+			RuntimeOrigin::signed(BOB.into()),
+			truncated_account.clone(),
+			DAI,
+			50_000_000_000_000,
+		));
+
+		assert_eq!(Tokens::free_balance(DAI, &truncated_account), 50_000_000_000_000);
 		assert_eq!(
-			MultiTransactionPayment::get_currency(&AccountId::from(HITCHHIKER)),
-			None
+			MultiTransactionPayment::get_currency(truncated_account.clone()),
+			Some(DAI)
 		);
+
+		// ------------ remove on delete ------------
+		assert_ok!(Tokens::transfer_all(
+			RuntimeOrigin::signed(truncated_account.clone()),
+			BOB.into(),
+			DAI,
+			false,
+		));
+
+		assert_eq!(MultiTransactionPayment::get_currency(truncated_account), None);
+	});
+}
+
+#[test]
+fn pepe_is_not_registered() {
+	TestNet::reset();
+
+	Hydra::execute_with(|| {
+		assert_ok!(MultiTransactionPayment::add_currency(
+			RuntimeOrigin::root(),
+			PEPE,
+			Price::from(10)
+		));
+	});
+}
+
+#[test]
+fn fee_currency_cannot_be_set_to_not_accepted_asset() {
+	TestNet::reset();
+
+	Hydra::execute_with(|| {
+		// assemble
+		let amount = 50_000_000 * UNITS;
+		assert_eq!(MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)), None);
+
+		// act
+		assert_ok!(Currencies::transfer(
+			RuntimeOrigin::signed(BOB.into()),
+			HITCHHIKER.into(),
+			PEPE,
+			amount,
+		));
+
+		// assert
+		assert_eq!(Tokens::free_balance(PEPE, &AccountId::from(HITCHHIKER)), amount);
+		assert_eq!(MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)), None);
 	});
 }
 
@@ -132,11 +386,10 @@ fn fee_currency_on_account_lifecycle() {
 fn fee_currency_should_not_change_when_account_holds_native_currency_already() {
 	TestNet::reset();
 	Hydra::execute_with(|| {
-		assert_ok!(Balances::set_balance(
+		assert_ok!(Balances::force_set_balance(
 			RuntimeOrigin::root(),
 			HITCHHIKER.into(),
 			UNITS,
-			0,
 		));
 
 		assert_ok!(Currencies::transfer(
@@ -146,11 +399,8 @@ fn fee_currency_should_not_change_when_account_holds_native_currency_already() {
 			50_000_000_000_000,
 		));
 
-		assert_eq!(Balances::free_balance(&AccountId::from(HITCHHIKER)), UNITS);
-		assert_eq!(
-			MultiTransactionPayment::get_currency(&AccountId::from(HITCHHIKER)),
-			None
-		);
+		assert_eq!(Balances::free_balance(AccountId::from(HITCHHIKER)), UNITS);
+		assert_eq!(MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)), None);
 	});
 }
 
@@ -173,7 +423,7 @@ fn fee_currency_should_not_change_when_account_holds_other_token_already() {
 		));
 
 		assert_eq!(
-			MultiTransactionPayment::get_currency(&AccountId::from(HITCHHIKER)),
+			MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)),
 			Some(1)
 		);
 	});
@@ -203,9 +453,74 @@ fn fee_currency_should_reset_to_default_when_account_spends_tokens() {
 			false,
 		));
 
-		assert_eq!(
-			MultiTransactionPayment::get_currency(&AccountId::from(HITCHHIKER)),
-			None
-		);
+		assert_eq!(MultiTransactionPayment::get_currency(AccountId::from(HITCHHIKER)), None);
 	});
+}
+
+#[test]
+fn omnipool_spotprice_and_onchain_price_should_be_very_similar() {
+	TestNet::reset();
+
+	Hydra::execute_with(|| {
+		init_omnipool();
+
+		assert_ok!(Currencies::update_balance(
+			hydradx_runtime::RuntimeOrigin::root(),
+			Omnipool::protocol_account(),
+			DOT,
+			3000 * UNITS as i128,
+		));
+
+		assert_ok!(hydradx_runtime::Omnipool::add_token(
+			hydradx_runtime::RuntimeOrigin::root(),
+			DOT,
+			FixedU128::from_inner(25_650_000_000_000_000),
+			Permill::from_percent(1),
+			AccountId::from(BOB),
+		));
+		do_trade_to_populate_oracle(DAI, DOT, 10 * UNITS);
+
+		set_relaychain_block_number(10);
+
+		//Act
+		let spot_price = Omnipool::spot_price(DAI, DOT).unwrap();
+
+		let default_route = Router::get_route(AssetPair::new(DAI, DOT));
+		let onchain_oracle_price = OraclePriceProvider::<AssetId, EmaOracle, hydradx_runtime::LRNA>::price(
+			&default_route,
+			OraclePeriod::Short,
+		)
+		.unwrap();
+
+		let onchain_oracle_price = FixedU128::from_rational(onchain_oracle_price.n, onchain_oracle_price.d);
+
+		//Assert
+		assert_eq!(spot_price.to_float(), onchain_oracle_price.to_float());
+	});
+}
+
+fn do_trade_to_populate_oracle(asset_1: AssetId, asset_2: AssetId, amount: Balance) {
+	assert_ok!(Tokens::set_balance(
+		RawOrigin::Root.into(),
+		CHARLIE.into(),
+		LRNA,
+		1000000000000 * UNITS,
+		0,
+	));
+
+	assert_ok!(Omnipool::sell(
+		RuntimeOrigin::signed(CHARLIE.into()),
+		LRNA,
+		asset_1,
+		amount,
+		Balance::MIN
+	));
+
+	assert_ok!(Omnipool::sell(
+		RuntimeOrigin::signed(CHARLIE.into()),
+		LRNA,
+		asset_2,
+		amount,
+		Balance::MIN
+	));
 }

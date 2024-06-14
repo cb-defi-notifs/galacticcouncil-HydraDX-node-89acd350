@@ -24,7 +24,9 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
-use frame_support::traits::Get;
+pub mod migration;
+
+use frame_support::{traits::Get, BoundedVec};
 
 use orml_traits::MultiCurrency;
 use pallet_session::SessionManager;
@@ -41,8 +43,11 @@ pub mod pallet {
 	use frame_support::sp_runtime::traits::AtLeast32BitUnsigned;
 	use frame_system::pallet_prelude::BlockNumberFor;
 
+	/// The current storage version.
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
 	#[pallet::pallet]
-	#[pallet::without_storage_info]
+	#[pallet::storage_version(STORAGE_VERSION)]
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
@@ -80,6 +85,9 @@ pub mod pallet {
 		/// The session manager this pallet will wrap that provides the collator account list on
 		/// `new_session`.
 		type SessionManager: SessionManager<Self::AccountId>;
+
+		/// Max candidates
+		type MaxCandidates: Get<u32>;
 	}
 
 	#[pallet::error]
@@ -99,14 +107,22 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn collators)]
 	/// Stores the collators per session (index).
-	pub type Collators<T: Config> = StorageMap<_, Twox64Concat, SessionIndex, Vec<T::AccountId>, ValueQuery>;
+	pub type Collators<T: Config> =
+		StorageMap<_, Twox64Concat, SessionIndex, BoundedVec<T::AccountId, T::MaxCandidates>, ValueQuery>;
 }
 
 impl<T: Config> SessionManager<T::AccountId> for Pallet<T> {
 	fn new_session(index: SessionIndex) -> Option<Vec<T::AccountId>> {
 		let maybe_collators = T::SessionManager::new_session(index);
 		if let Some(ref collators) = maybe_collators {
-			Collators::<T>::insert(index, collators)
+			let maybe_collators_b = BoundedVec::<T::AccountId, T::MaxCandidates>::try_from(collators.clone());
+			match maybe_collators_b {
+				Ok(collators_b) => Collators::<T>::insert(index, collators_b),
+				Err(_) => {
+					log::warn!(target: "runtime::collator-rewards", "Error reward collators: too many collators {:?}", collators);
+					return None;
+				}
+			}
 		}
 		maybe_collators
 	}

@@ -5,6 +5,7 @@ use frame_support::{
 	assert_ok,
 	sp_runtime::{FixedU128, Permill},
 	traits::Contains,
+	weights::Weight,
 };
 use polkadot_xcm::latest::prelude::*;
 use polkadot_xcm::VersionedXcm;
@@ -206,7 +207,24 @@ fn transfer_should_not_work_when_transfering_omnipool_assets_to_omnipool_account
 }
 
 #[test]
-fn calling_pallet_xcm_extrinsic_should_be_filtered_by_call_filter() {
+fn xyk_create_pool_with_lrna_should_be_filtered_by_call_filter() {
+	TestNet::reset();
+
+	Hydra::execute_with(|| {
+		// the values here don't need to make sense, all we need is a valid Call
+		let call = hydradx_runtime::RuntimeCall::XYK(pallet_xyk::Call::create_pool {
+			asset_a: LRNA,
+			amount_a: UNITS,
+			asset_b: DOT,
+			amount_b: UNITS,
+		});
+
+		assert!(!hydradx_runtime::CallFilter::contains(&call));
+	});
+}
+
+#[test]
+fn calling_pallet_xcm_send_extrinsic_should_not_be_filtered_by_call_filter() {
 	TestNet::reset();
 
 	Hydra::execute_with(|| {
@@ -214,6 +232,21 @@ fn calling_pallet_xcm_extrinsic_should_be_filtered_by_call_filter() {
 		let call = hydradx_runtime::RuntimeCall::PolkadotXcm(pallet_xcm::Call::send {
 			dest: Box::new(MultiLocation::parent().into()),
 			message: Box::new(VersionedXcm::from(Xcm(vec![]))),
+		});
+
+		assert!(hydradx_runtime::CallFilter::contains(&call));
+	});
+}
+
+#[test]
+fn calling_pallet_xcm_extrinsic_should_be_filtered_by_call_filter() {
+	TestNet::reset();
+
+	Hydra::execute_with(|| {
+		// the values here don't need to make sense, all we need is a valid Call
+		let call = hydradx_runtime::RuntimeCall::PolkadotXcm(pallet_xcm::Call::execute {
+			message: Box::new(VersionedXcm::from(Xcm(vec![]))),
+			max_weight: Weight::zero(),
 		});
 
 		assert!(!hydradx_runtime::CallFilter::contains(&call));
@@ -229,6 +262,44 @@ fn calling_orml_xcm_extrinsic_should_be_filtered_by_call_filter() {
 		let call = hydradx_runtime::RuntimeCall::OrmlXcm(orml_xcm::Call::send_as_sovereign {
 			dest: Box::new(MultiLocation::parent().into()),
 			message: Box::new(VersionedXcm::from(Xcm(vec![]))),
+		});
+
+		assert!(!hydradx_runtime::CallFilter::contains(&call));
+	});
+}
+
+#[test]
+fn create_contract_from_evm_pallet_should_be_filtered_by_call_filter() {
+	use sp_core::{H160, H256, U256};
+
+	TestNet::reset();
+
+	Hydra::execute_with(|| {
+		// the values here don't need to make sense, all we need is a valid Call
+		let call = hydradx_runtime::RuntimeCall::EVM(pallet_evm::Call::create {
+			source: H160::default(),
+			init: vec![0, 1, 1, 0],
+			value: U256::zero(),
+			gas_limit: 1000000,
+			max_fee_per_gas: U256::from(100000u64),
+			max_priority_fee_per_gas: None,
+			nonce: None,
+			access_list: [].into(),
+		});
+
+		assert!(!hydradx_runtime::CallFilter::contains(&call));
+
+		// the values here don't need to make sense, all we need is a valid Call
+		let call = hydradx_runtime::RuntimeCall::EVM(pallet_evm::Call::create2 {
+			source: H160::default(),
+			init: vec![0, 1, 1, 0],
+			salt: H256::zero(),
+			value: U256::zero(),
+			gas_limit: 1000000,
+			max_fee_per_gas: U256::from(100000u64),
+			max_priority_fee_per_gas: None,
+			nonce: None,
+			access_list: [].into(),
 		});
 
 		assert!(!hydradx_runtime::CallFilter::contains(&call));

@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::router::Trade;
 use codec::MaxEncodedLen;
 use frame_support::sp_runtime::traits::{AtLeast32BitUnsigned, One};
 use scale_info::TypeInfo;
@@ -25,7 +26,7 @@ impl<AssetId, Price> NativePriceOracle<AssetId, Price> for () {
 pub trait PriceOracle<AssetId> {
 	type Price;
 
-	fn price(asset_a: AssetId, asset_b: AssetId, period: OraclePeriod) -> Option<Self::Price>;
+	fn price(route: &[Trade<AssetId>], period: OraclePeriod) -> Option<Self::Price>;
 }
 
 pub struct AlwaysPriceOfOne;
@@ -199,8 +200,9 @@ impl<Balance> From<Volume<Balance>> for (Balance, Balance, Balance, Balance) {
 }
 
 /// Struct to represent pool liquidity for an asset pair.
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
-#[derive(RuntimeDebug, Encode, Decode, Copy, Clone, PartialEq, Eq, Default, TypeInfo, MaxEncodedLen)]
+#[derive(
+	RuntimeDebug, Encode, Decode, Serialize, Deserialize, Copy, Clone, PartialEq, Eq, Default, TypeInfo, MaxEncodedLen,
+)]
 pub struct Liquidity<Balance> {
 	pub a: Balance,
 	pub b: Balance,

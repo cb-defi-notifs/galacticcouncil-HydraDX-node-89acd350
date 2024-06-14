@@ -1,168 +1,417 @@
-use crate::stableswap::tests::ONE;
+use crate::stableswap::types::AssetReserve;
 use crate::stableswap::*;
 use crate::types::Balance;
 use proptest::prelude::*;
 use proptest::proptest;
 
-const D_ITERATIONS: u8 = 255;
+const D_ITERATIONS: u8 = 128;
 const Y_ITERATIONS: u8 = 64;
 
-const RESERVE_RANGE: (Balance, Balance) = (100_000 * ONE, 100_000_000 * ONE);
-const LOW_RESERVE_RANGE: (Balance, Balance) = (10_u128, 11_u128);
-const HIGH_RESERVE_RANGE: (Balance, Balance) = (500_000_000_000 * ONE, 500_000_000_001 * ONE);
-
-fn trade_amount() -> impl Strategy<Value = Balance> {
-	1000..10000 * ONE
-}
-
-fn high_trade_amount() -> impl Strategy<Value = Balance> {
-	500_000_000_000 * ONE..500_000_000_001 * ONE
-}
+const RESERVE_RANGE: (Balance, Balance) = (10_000, 1_000_000_000);
+const TRADE_RANGE: (Balance, Balance) = (1, 5_000);
 
 fn asset_reserve() -> impl Strategy<Value = Balance> {
 	RESERVE_RANGE.0..RESERVE_RANGE.1
 }
-fn low_asset_reserve() -> impl Strategy<Value = Balance> {
-	LOW_RESERVE_RANGE.0..LOW_RESERVE_RANGE.1
-}
-fn high_asset_reserve() -> impl Strategy<Value = Balance> {
-	HIGH_RESERVE_RANGE.0..HIGH_RESERVE_RANGE.1
+
+fn trade_amount() -> impl Strategy<Value = Balance> {
+	TRADE_RANGE.0..TRADE_RANGE.1
 }
 
 fn amplification() -> impl Strategy<Value = Balance> {
 	2..10000u128
 }
 
+fn trade_pair(size: usize) -> impl Strategy<Value = (usize, usize)> {
+	(0..size, 0..size)
+		.prop_filter("cannot be equal", |(i, j)| i != j)
+		.prop_map(|(i, j)| (i, j))
+}
+
+fn to_precision(value: Balance, precision: u8) -> Balance {
+	value * 10u128.pow(precision as u32)
+}
+
+fn decimals() -> impl Strategy<Value = u8> {
+	prop_oneof![Just(6), Just(8), Just(10), Just(12), Just(18)]
+}
+
+// Note that his can generate very unbalanced pools. Should be adjusted to generate more balanced pools.
+// In such case, we can see some outliers in the tests.
+fn some_pool(size: usize) -> impl Strategy<Value = Vec<AssetReserve>> {
+	prop::collection::vec(
+		(asset_reserve(), decimals()).prop_map(|(v, dec)| AssetReserve::new(to_precision(v, dec), dec)),
+		size,
+	)
+}
+
 proptest! {
 	#![proptest_config(ProptestConfig::with_cases(1000))]
 	#[test]
-	fn test_d_extreme(reserve_in in low_asset_reserve(),
-		reserve_out in high_asset_reserve(),
+	fn in_given_out(
+		pool in some_pool(3),
+		amount in trade_amount(),
 		amp in amplification(),
+		(idx_in, idx_out) in trade_pair(3),
 	) {
-		let d = calculate_d::<D_ITERATIONS>(&[reserve_in, reserve_out], amp);
+		let d0 = calculate_d::<D_ITERATIONS>(&pool, amp).unwrap();
+		let amount_out = to_precision(amount, pool[idx_out].decimals);
 
-		assert!(d.is_some());
+		let amount_in = calculate_in_given_out::<D_ITERATIONS,Y_ITERATIONS>(&pool, idx_in, idx_out, amount_out, amp).unwrap();
+		let updated_pool: Vec<AssetReserve> = pool
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					AssetReserve::new(v.amount + amount_in, v.decimals)
+				} else if idx == idx_out {
+					AssetReserve::new(v.amount - amount_out, v.decimals)
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d::<D_ITERATIONS>(&updated_pool, amp).unwrap();
+		assert!(d1 >= d0);
 	}
 }
 
 proptest! {
 	#![proptest_config(ProptestConfig::with_cases(1000))]
 	#[test]
-	fn test_out_given_in_extreme(amount_in in high_trade_amount(),
-		reserve_in in low_asset_reserve(),
-		reserve_out in high_asset_reserve(),
+	fn in_given_out_4_assets(
+		pool in some_pool(4),
+		amount in trade_amount(),
 		amp in amplification(),
+		(idx_in, idx_out) in trade_pair(4),
 	) {
-		let d1 = calculate_d::<D_ITERATIONS>(&[reserve_in, reserve_out], amp).unwrap();
+		let d0 = calculate_d::<D_ITERATIONS>(&pool, amp).unwrap();
+		let amount_out = to_precision(amount, pool[idx_out].decimals);
 
-		let result = calculate_out_given_in::<D_ITERATIONS, Y_ITERATIONS>(&[reserve_in, reserve_out],0,1, amount_in, amp);
-
-		assert!(result.is_some());
-
-		let d2 = calculate_d::<D_ITERATIONS>(&[reserve_in + amount_in, reserve_out - result.unwrap() ], amp).unwrap();
-
-		assert!(d2 >= d1);
+		let amount_in = calculate_in_given_out::<D_ITERATIONS,Y_ITERATIONS>(&pool, idx_in, idx_out, amount_out, amp).unwrap();
+		let updated_pool: Vec<AssetReserve> = pool
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					AssetReserve::new(v.amount + amount_in, v.decimals)
+				} else if idx == idx_out {
+					AssetReserve::new(v.amount - amount_out, v.decimals)
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d::<D_ITERATIONS>(&updated_pool, amp).unwrap();
+		assert!(d1 >= d0);
 	}
 }
 
 proptest! {
 	#![proptest_config(ProptestConfig::with_cases(1000))]
 	#[test]
-	fn test_out_given_in(amount_in in trade_amount(),
-		reserve_in in asset_reserve(),
-		reserve_out in asset_reserve(),
+	fn in_given_out_5_assets(
+		pool in some_pool(5),
+		amount in trade_amount(),
 		amp in amplification(),
+		(idx_in, idx_out) in trade_pair(5),
 	) {
-		let d1 = calculate_d::<D_ITERATIONS>(&[reserve_in, reserve_out], amp).unwrap();
+		let d0 = calculate_d::<D_ITERATIONS>(&pool, amp).unwrap();
+		let amount_out = to_precision(amount, pool[idx_out].decimals);
 
-		let result = calculate_out_given_in::<D_ITERATIONS, Y_ITERATIONS>(&[reserve_in, reserve_out],0,1, amount_in, amp);
-
-		assert!(result.is_some());
-
-		let d2 = calculate_d::<D_ITERATIONS>(&[reserve_in + amount_in, reserve_out - result.unwrap() ], amp).unwrap();
-
-		assert!(d2 >= d1);
+		let amount_in = calculate_in_given_out::<D_ITERATIONS,Y_ITERATIONS>(&pool, idx_in, idx_out, amount_out, amp).unwrap();
+		let updated_pool: Vec<AssetReserve> = pool
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					AssetReserve::new(v.amount + amount_in, v.decimals)
+				} else if idx == idx_out {
+					AssetReserve::new(v.amount - amount_out, v.decimals)
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d::<D_ITERATIONS>(&updated_pool, amp).unwrap();
+		assert!(d1 >= d0);
 	}
 }
 
 proptest! {
 	#![proptest_config(ProptestConfig::with_cases(1000))]
 	#[test]
-	fn test_in_given_out(amount_out in trade_amount(),
-		reserve_in in asset_reserve(),
-		reserve_out in asset_reserve(),
+	fn in_given_out_internal(
+		pool in some_pool(4),
+		amount in trade_amount(),
 		amp in amplification(),
+		(idx_in, idx_out) in trade_pair(4),
 	) {
-		let d1 = calculate_d::<D_ITERATIONS>(&[reserve_in, reserve_out], amp).unwrap();
+		let amount_out = normalize_value(
+			to_precision(amount, pool[idx_out].decimals),
+			pool[idx_out].decimals,
+			18u8,
+			Rounding::Down,
+		);
 
-		let result = calculate_in_given_out::<D_ITERATIONS,Y_ITERATIONS>(&[reserve_in, reserve_out],0,1, amount_out, amp);
+		let balances = pool
+			.iter()
+			.map(|v| normalize_value(v.amount, v.decimals, 18u8, Rounding::Down))
+			.collect::<Vec<Balance>>();
 
-		assert!(result.is_some());
-
-		let d2 = calculate_d::<D_ITERATIONS>(&[reserve_in + result.unwrap(), reserve_out - amount_out ], amp).unwrap();
-
-		assert!(d2 >= d1);
+		let d0 = calculate_d_internal::<D_ITERATIONS>(&balances, amp).unwrap();
+		let new_reserve_in =
+			calculate_y_given_out::<D_ITERATIONS, Y_ITERATIONS>(amount_out, idx_in, idx_out, &balances, amp).unwrap();
+		let updated_balances: Vec<Balance> = balances
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					new_reserve_in
+				}
+				else if idx == idx_out {
+					v - amount_out
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d_internal::<D_ITERATIONS>(&updated_balances, amp).unwrap();
+		assert!(d1 >= d0);
 	}
 }
 
 proptest! {
 	#![proptest_config(ProptestConfig::with_cases(1000))]
 	#[test]
-	fn test_add_liquidity(
-		amount_a in trade_amount(),
-		amount_b in trade_amount(),
-		reserve_a in asset_reserve(),
-		reserve_b in asset_reserve(),
+	fn out_given_in(
+		pool in some_pool(2),
+		amount in trade_amount(),
 		amp in amplification(),
-		issuance in asset_reserve(),
+		(idx_in, idx_out) in trade_pair(2),
 	) {
-		let initial_reserves = &[reserve_a, reserve_b];
-		let updated_reserves = &[reserve_a.checked_add(amount_a).unwrap(), reserve_b.checked_add(amount_b).unwrap()];
+		let d0 = calculate_d::<D_ITERATIONS>(&pool, amp).unwrap();
+		let amount_in = to_precision(amount, pool[idx_in].decimals);
 
-		let result = calculate_shares::<D_ITERATIONS>(initial_reserves, updated_reserves, amp, issuance);
-
-		assert!(result.is_some());
+		let amount_out = calculate_out_given_in::<D_ITERATIONS,Y_ITERATIONS>(&pool, idx_in, idx_out, amount_in, amp).unwrap();
+		let updated_pool: Vec<AssetReserve> = pool
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					AssetReserve::new(v.amount + amount_in, v.decimals)
+				} else if idx == idx_out {
+					AssetReserve::new(v.amount - amount_out, v.decimals)
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d::<D_ITERATIONS>(&updated_pool, amp).unwrap();
+		assert!(d1 >= d0);
 	}
 }
 
 proptest! {
 	#![proptest_config(ProptestConfig::with_cases(1000))]
 	#[test]
-	fn round_trip_d_y_5(reserve_a in asset_reserve(),
-		reserve_b in asset_reserve(),
-		reserve_c in asset_reserve(),
-		reserve_d in asset_reserve(),
-		reserve_e in asset_reserve(),
+	fn out_given_in_3_assets(
+		pool in some_pool(3),
+		amount in trade_amount(),
 		amp in amplification(),
+		(idx_in, idx_out) in trade_pair(3),
 	) {
-		let ann = amp * 3125u128;  // 5^5
+		let d0 = calculate_d::<D_ITERATIONS>(&pool, amp).unwrap();
+		let amount_in = to_precision(amount, pool[idx_in].decimals);
 
-		let d = calculate_d::<D_ITERATIONS>(&[reserve_a, reserve_b, reserve_c, reserve_d, reserve_e], ann).unwrap();
-		let y = calculate_y::<Y_ITERATIONS>(&[reserve_b, reserve_c, reserve_d, reserve_e], d, ann).unwrap();
-
-		assert!(y - 4 <= reserve_a);
-		assert!(y >= reserve_a);
+		let amount_out = calculate_out_given_in::<D_ITERATIONS,Y_ITERATIONS>(&pool, idx_in, idx_out, amount_in, amp).unwrap();
+		let updated_pool: Vec<AssetReserve> = pool
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					AssetReserve::new(v.amount + amount_in, v.decimals)
+				} else if idx == idx_out {
+					AssetReserve::new(v.amount - amount_out, v.decimals)
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d::<D_ITERATIONS>(&updated_pool, amp).unwrap();
+		assert!(d1 >= d0);
 	}
 }
 
 proptest! {
 	#![proptest_config(ProptestConfig::with_cases(1000))]
 	#[test]
-	fn round_trip_d_y_4(reserve_a in asset_reserve(),
-		reserve_b in asset_reserve(),
-		reserve_c in asset_reserve(),
-		reserve_e in asset_reserve(),
+	fn out_given_in_4_assets(
+		pool in some_pool(4),
+		amount in trade_amount(),
+		amp in amplification(),
+		(idx_in, idx_out) in trade_pair(4),
+	) {
+		let d0 = calculate_d::<D_ITERATIONS>(&pool, amp).unwrap();
+		let amount_in = to_precision(amount, pool[idx_in].decimals);
+
+		let amount_out = calculate_out_given_in::<D_ITERATIONS,Y_ITERATIONS>(&pool, idx_in, idx_out, amount_in, amp).unwrap();
+		let updated_pool: Vec<AssetReserve> = pool
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					AssetReserve::new(v.amount + amount_in, v.decimals)
+				} else if idx == idx_out {
+					AssetReserve::new(v.amount - amount_out, v.decimals)
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d::<D_ITERATIONS>(&updated_pool, amp).unwrap();
+		assert!(d1 >= d0);
+	}
+}
+
+proptest! {
+	#![proptest_config(ProptestConfig::with_cases(1000))]
+	#[test]
+	fn out_given_in_5_assets(
+		pool in some_pool(5),
+		amount in trade_amount(),
+		amp in amplification(),
+		(idx_in, idx_out) in trade_pair(5),
+	) {
+		let d0 = calculate_d::<D_ITERATIONS>(&pool, amp).unwrap();
+		let amount_in = to_precision(amount, pool[idx_in].decimals);
+
+		let amount_out = calculate_out_given_in::<D_ITERATIONS,Y_ITERATIONS>(&pool, idx_in, idx_out, amount_in, amp).unwrap();
+		let updated_pool: Vec<AssetReserve> = pool
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					AssetReserve::new(v.amount + amount_in, v.decimals)
+				} else if idx == idx_out {
+					AssetReserve::new(v.amount - amount_out, v.decimals)
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d::<D_ITERATIONS>(&updated_pool, amp).unwrap();
+		assert!(d1 >= d0);
+	}
+}
+
+proptest! {
+	#![proptest_config(ProptestConfig::with_cases(1000))]
+	#[test]
+	fn remove_liquidity_invariant(
+		pool in some_pool(3),
+		amount in trade_amount(),
+		amp in amplification(),
+		(_, idx_out) in trade_pair(3),
+	) {
+		let d0 = calculate_d::<D_ITERATIONS>(&pool, amp).unwrap();
+		let amount = to_precision(amount, 18u8);
+
+		let balances = pool
+			.iter()
+			.map(|v| normalize_value(v.amount, v.decimals, 18u8, Rounding::Down))
+			.collect::<Vec<Balance>>();
+		let issuance = balances.iter().sum();
+
+		let amount_out = calculate_withdraw_one_asset::<D_ITERATIONS,Y_ITERATIONS>(&pool, amount, idx_out, issuance, amp, Permill::zero()).unwrap();
+		let updated_pool: Vec<AssetReserve> = pool
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_out {
+					AssetReserve::new(v.amount - amount_out.0, v.decimals)
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d::<D_ITERATIONS>(&updated_pool, amp).unwrap();
+		assert!(d1 < d0);
+	}
+}
+
+proptest! {
+	#![proptest_config(ProptestConfig::with_cases(1000))]
+	#[test]
+	fn out_given_in_internal(
+		pool in some_pool(4),
+		amount in trade_amount(),
+		amp in amplification(),
+		(idx_in, idx_out) in trade_pair(4),
+	) {
+		let amount_in = normalize_value(
+			to_precision(amount, pool[idx_in].decimals),
+			pool[idx_in].decimals,
+			18u8,
+			Rounding::Down,
+		);
+
+		let balances = pool
+			.iter()
+			.map(|v| normalize_value(v.amount, v.decimals, 18u8, Rounding::Down))
+			.collect::<Vec<Balance>>();
+
+		let d0 = calculate_d_internal::<D_ITERATIONS>(&balances, amp).unwrap();
+		let new_reserve_out =
+			calculate_y_given_in::<D_ITERATIONS, Y_ITERATIONS>(amount_in, idx_in, idx_out, &balances, amp).unwrap();
+
+		assert!(new_reserve_out < balances[idx_out]);
+		let updated_balances: Vec<Balance> = balances
+			.into_iter()
+			.enumerate()
+			.map(|(idx, v)| {
+				if idx == idx_in {
+					v + amount_in
+				}
+				else if idx == idx_out {
+					new_reserve_out
+				} else {
+					v
+				}
+			})
+			.collect();
+		let d1 = calculate_d_internal::<D_ITERATIONS>(&updated_balances, amp).unwrap();
+		assert!(d1 >= d0);
+		let diff = d1 - d0;
+		assert!(diff <= 8000u128);
+	}
+}
+
+use sp_arithmetic::Permill;
+
+proptest! {
+	#![proptest_config(ProptestConfig::with_cases(1000))]
+	#[test]
+	fn calculate_shares_for_amount_should_calculate_shares_correctly(
+		pool in some_pool(2),
+		amount in trade_amount(),
 		amp in amplification(),
 	) {
-		let ann = amp * 256u128;  // 4^4
+		let balances = pool
+			.iter()
+			.map(|v| normalize_value(v.amount, v.decimals, 18u8, Rounding::Down))
+			.collect::<Vec<Balance>>();
 
-		let reserve_d = 0u128;
+		let issuance = balances.iter().sum();
+		let amount = to_precision(amount, pool[0].decimals);
+		let result = calculate_shares_for_amount::<D_ITERATIONS>(&pool, 0, amount, amp, issuance, Permill::zero()).unwrap();
 
-		let d = calculate_d::<D_ITERATIONS>(&[reserve_a, reserve_b, reserve_c, reserve_d, reserve_e], ann).unwrap();
-		let y = calculate_y::<Y_ITERATIONS>(&[reserve_b, reserve_c, reserve_d, reserve_e], d, ann).unwrap();
-
-		assert!(y - 4 <= reserve_a);
-		assert!(y >= reserve_a);
+		let received =
+		calculate_withdraw_one_asset::<D_ITERATIONS, Y_ITERATIONS>(&pool, result, 0, issuance, amp, Permill::zero())
+			.unwrap();
+		// LP should not receive more than provided.
+		assert!(received.0 <= amount);
+		let diff = amount - received.0;
+		assert!(diff <= 1000)
 	}
 }

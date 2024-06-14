@@ -24,27 +24,25 @@ use std::collections::HashMap;
 use crate as pallet_omnipool;
 
 use crate::traits::ExternalPriceProvider;
-use frame_support::dispatch::Weight;
-use frame_support::traits::{ConstU128, Everything, GenesisBuild};
+use frame_support::traits::{ConstU128, Everything};
+use frame_support::weights::Weight;
 use frame_support::{
 	assert_ok, construct_runtime, parameter_types,
 	traits::{ConstU32, ConstU64},
 };
 use frame_system::EnsureRoot;
-use hydradx_traits::Registry;
+use hydradx_traits::{registry::Inspect as InspectRegistry, AssetKind};
 use orml_traits::parameter_type_with_key;
 use primitive_types::{U128, U256};
 use sp_core::H256;
 use sp_runtime::{
-	testing::Header,
 	traits::{BlakeTwo256, IdentityLookup},
+	BuildStorage,
 };
 
-type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
 type Block = frame_system::mocking::MockBlock<Test>;
 
 pub type AccountId = u64;
-pub type Balance = u128;
 pub type AssetId = u32;
 
 pub const HDX: AssetId = 0;
@@ -52,6 +50,7 @@ pub const LRNA: AssetId = 1;
 pub const DAI: AssetId = 2;
 
 pub const REGISTERED_ASSET: AssetId = 1000;
+pub const ASSET_WITHOUT_ED: AssetId = 1001;
 
 pub const LP1: u64 = 1;
 pub const LP2: u64 = 2;
@@ -77,13 +76,11 @@ thread_local! {
 	pub static EXT_PRICE_ADJUSTMENT: RefCell<(u32,u32, bool)> = RefCell::new((0u32,0u32, false));
 	pub static WITHDRAWAL_FEE: RefCell<Permill> = RefCell::new(Permill::from_percent(0));
 	pub static WITHDRAWAL_ADJUSTMENT: RefCell<(u32,u32, bool)> = RefCell::new((0u32,0u32, false));
+	pub static ON_TRADE_WITHDRAWAL: RefCell<Permill> = RefCell::new(Permill::from_percent(0));
 }
 
 construct_runtime!(
-	pub enum Test where
-		Block = Block,
-		NodeBlock = Block,
-		UncheckedExtrinsic = UncheckedExtrinsic,
+	pub enum Test
 	{
 		System: frame_system,
 		Balances: pallet_balances,
@@ -98,13 +95,12 @@ impl frame_system::Config for Test {
 	type BlockLength = ();
 	type RuntimeOrigin = RuntimeOrigin;
 	type RuntimeCall = RuntimeCall;
-	type Index = u64;
-	type BlockNumber = u64;
+	type Nonce = u64;
+	type Block = Block;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
 	type AccountId = u64;
 	type Lookup = IdentityLookup<Self::AccountId>;
-	type Header = Header;
 	type RuntimeEvent = RuntimeEvent;
 	type BlockHashCount = ConstU64<250>;
 	type DbWeight = ();
@@ -129,11 +125,19 @@ impl pallet_balances::Config for Test {
 	type MaxLocks = ();
 	type MaxReserves = ConstU32<50>;
 	type ReserveIdentifier = [u8; 8];
+	type FreezeIdentifier = ();
+	type MaxFreezes = ();
+	type MaxHolds = ();
+	type RuntimeHoldReason = ();
 }
 
 parameter_type_with_key! {
-	pub ExistentialDeposits: |_currency_id: AssetId| -> Balance {
-		0
+	pub ExistentialDeposits: |currency_id: AssetId| -> Balance {
+		if *currency_id == LRNA{
+			400_000_000
+		}else{
+			1
+		}
 	};
 }
 
@@ -145,7 +149,7 @@ impl orml_tokens::Config for Test {
 	type WeightInfo = ();
 	type ExistentialDeposits = ExistentialDeposits;
 	type MaxLocks = ();
-	type DustRemovalWhitelist = Everything;
+	type DustRemovalWhitelist = ();
 	type MaxReserves = ();
 	type ReserveIdentifier = ();
 	type CurrencyHooks = ();
@@ -177,7 +181,6 @@ impl Config for Test {
 	type Currency = Tokens;
 	type AuthorityOrigin = EnsureRoot<Self::AccountId>;
 	type HubAssetId = LRNAAssetId;
-	type StableCoinAssetId = DAIAssetId;
 	type WeightInfo = ();
 	type HdxAssetId = HDXAssetId;
 	type NFTCollectionId = PosiitionCollectionId;
@@ -189,7 +192,7 @@ impl Config for Test {
 	type MaxInRatio = MaxInRatio;
 	type MaxOutRatio = MaxOutRatio;
 	type CollectionId = u32;
-	type OmnipoolHooks = ();
+	type OmnipoolHooks = MockHooks;
 	type PriceBarrier = (
 		EnsurePriceWithin<AccountId, AssetId, MockOracle, FourPercentDiff, ()>,
 		EnsurePriceWithin<AccountId, AssetId, MockOracle, MaxPriceDiff, ()>,
@@ -207,10 +210,8 @@ pub struct ExtBuilder {
 	asset_weight_cap: Permill,
 	min_liquidity: u128,
 	min_trade_limit: u128,
-	register_stable_asset: bool,
 	max_in_ratio: Balance,
 	max_out_ratio: Balance,
-	tvl_cap: Balance,
 	init_pool: Option<(FixedU128, FixedU128)>,
 	pool_tokens: Vec<(AssetId, FixedU128, AccountId, Balance)>,
 }
@@ -272,11 +273,9 @@ impl Default for ExtBuilder {
 			registered_assets: vec![],
 			min_trade_limit: 0,
 			init_pool: None,
-			register_stable_asset: true,
 			pool_tokens: vec![],
 			max_in_ratio: 1u128,
 			max_out_ratio: 1u128,
-			tvl_cap: u128::MAX,
 		}
 	}
 }
@@ -324,20 +323,12 @@ impl ExtBuilder {
 		self
 	}
 
-	pub fn without_stable_asset_in_registry(mut self) -> Self {
-		self.register_stable_asset = false;
-		self
-	}
 	pub fn with_max_in_ratio(mut self, value: Balance) -> Self {
 		self.max_in_ratio = value;
 		self
 	}
 	pub fn with_max_out_ratio(mut self, value: Balance) -> Self {
 		self.max_out_ratio = value;
-		self
-	}
-	pub fn with_tvl_cap(mut self, value: Balance) -> Self {
-		self.tvl_cap = value;
 		self
 	}
 	pub fn with_max_allowed_price_difference(self, max_allowed: Permill) -> Self {
@@ -362,6 +353,11 @@ impl ExtBuilder {
 		self
 	}
 
+	pub fn with_on_trade_withdrawal(self, p: Permill) -> Self {
+		ON_TRADE_WITHDRAWAL.with(|v| *v.borrow_mut() = p);
+		self
+	}
+
 	pub fn with_token(
 		mut self,
 		asset_id: AssetId,
@@ -374,15 +370,14 @@ impl ExtBuilder {
 	}
 
 	pub fn build(self) -> sp_io::TestExternalities {
-		let mut t = frame_system::GenesisConfig::default().build_storage::<Test>().unwrap();
+		let mut t = frame_system::GenesisConfig::<Test>::default().build_storage().unwrap();
 
 		// Add DAi and HDX as pre-registered assets
 		REGISTERED_ASSETS.with(|v| {
-			if self.register_stable_asset {
-				v.borrow_mut().insert(DAI, DAI);
-			}
+			v.borrow_mut().insert(DAI, DAI);
 			v.borrow_mut().insert(HDX, HDX);
 			v.borrow_mut().insert(REGISTERED_ASSET, REGISTERED_ASSET);
+			v.borrow_mut().insert(ASSET_WITHOUT_ED, ASSET_WITHOUT_ED);
 			self.registered_assets.iter().for_each(|asset| {
 				v.borrow_mut().insert(*asset, *asset);
 			});
@@ -425,18 +420,21 @@ impl ExtBuilder {
 
 		let mut r: sp_io::TestExternalities = t.into();
 
-		r.execute_with(|| {
-			assert_ok!(Omnipool::set_tvl_cap(RuntimeOrigin::root(), self.tvl_cap,));
-		});
-
 		if let Some((stable_price, native_price)) = self.init_pool {
 			r.execute_with(|| {
-				assert_ok!(Omnipool::initialize_pool(
+				assert_ok!(Omnipool::add_token(
 					RuntimeOrigin::root(),
-					stable_price,
+					HDXAssetId::get(),
 					native_price,
 					Permill::from_percent(100),
-					Permill::from_percent(100)
+					Omnipool::protocol_account(),
+				));
+				assert_ok!(Omnipool::add_token(
+					RuntimeOrigin::root(),
+					DAIAssetId::get(),
+					stable_price,
+					Permill::from_percent(100),
+					Omnipool::protocol_account(),
 				));
 
 				for (asset_id, price, owner, amount) in self.pool_tokens {
@@ -456,6 +454,10 @@ impl ExtBuilder {
 				}
 			});
 		}
+
+		r.execute_with(|| {
+			System::set_block_number(1);
+		});
 
 		r
 	}
@@ -515,31 +517,56 @@ impl<AccountId: From<u64> + Into<u64> + Copy> Mutate<AccountId> for DummyNFT {
 
 pub struct DummyRegistry<T>(sp_std::marker::PhantomData<T>);
 
-impl<T: Config> Registry<T::AssetId, Vec<u8>, Balance, DispatchError> for DummyRegistry<T>
+impl<T: Config> InspectRegistry for DummyRegistry<T>
 where
 	T::AssetId: Into<AssetId> + From<u32>,
 {
+	type AssetId = T::AssetId;
+	type Location = u8;
+
+	fn is_sufficient(_id: Self::AssetId) -> bool {
+		unimplemented!()
+	}
+
 	fn exists(asset_id: T::AssetId) -> bool {
 		let asset = REGISTERED_ASSETS.with(|v| v.borrow().get(&(asset_id.into())).copied());
-		matches!(asset, Some(_))
+		asset.is_some()
 	}
 
-	fn retrieve_asset(_name: &Vec<u8>) -> Result<T::AssetId, DispatchError> {
-		Ok(T::AssetId::default())
+	fn decimals(_id: Self::AssetId) -> Option<u8> {
+		unimplemented!()
 	}
 
-	fn create_asset(_name: &Vec<u8>, _existential_deposit: Balance) -> Result<T::AssetId, DispatchError> {
-		let assigned = REGISTERED_ASSETS.with(|v| {
-			let l = v.borrow().len();
-			v.borrow_mut().insert(l as u32, l as u32);
-			l as u32
-		});
-		Ok(T::AssetId::from(assigned))
+	fn asset_type(_id: Self::AssetId) -> Option<AssetKind> {
+		unimplemented!()
+	}
+
+	fn is_banned(_id: Self::AssetId) -> bool {
+		unimplemented!()
+	}
+
+	fn asset_name(_id: Self::AssetId) -> Option<Vec<u8>> {
+		unimplemented!()
+	}
+
+	fn asset_symbol(_id: Self::AssetId) -> Option<Vec<u8>> {
+		unimplemented!()
+	}
+	fn existential_deposit(id: Self::AssetId) -> Option<u128> {
+		if id == ASSET_WITHOUT_ED.into() {
+			None
+		} else {
+			Some(ExistentialDeposits::get(&id.into()))
+		}
 	}
 }
 
 pub(crate) fn get_mock_minted_position(position_id: u32) -> Option<u64> {
 	POSITIONS.with(|v| v.borrow().get(&position_id).copied())
+}
+
+pub(crate) fn last_position_id() -> u32 {
+	Omnipool::next_position_id()
 }
 
 pub struct MockOracle;
@@ -644,5 +671,54 @@ pub struct FeeProvider;
 impl GetByKey<AssetId, (Permill, Permill)> for FeeProvider {
 	fn get(_: &AssetId) -> (Permill, Permill) {
 		(ASSET_FEE.with(|v| *v.borrow()), PROTOCOL_FEE.with(|v| *v.borrow()))
+	}
+}
+
+pub(crate) fn expect_events(e: Vec<RuntimeEvent>) {
+	e.into_iter().for_each(frame_system::Pallet::<Test>::assert_has_event);
+}
+
+pub struct MockHooks;
+
+impl OmnipoolHooks<RuntimeOrigin, AccountId, AssetId, Balance> for MockHooks {
+	type Error = DispatchError;
+
+	fn on_liquidity_changed(
+		_origin: RuntimeOrigin,
+		_asset: AssetInfo<AssetId, Balance>,
+	) -> Result<Weight, Self::Error> {
+		Ok(Weight::zero())
+	}
+
+	fn on_trade(
+		_origin: RuntimeOrigin,
+		_asset_in: AssetInfo<AssetId, Balance>,
+		_asset_out: AssetInfo<AssetId, Balance>,
+	) -> Result<Weight, Self::Error> {
+		Ok(Weight::zero())
+	}
+
+	fn on_hub_asset_trade(_origin: RuntimeOrigin, _asset: AssetInfo<AssetId, Balance>) -> Result<Weight, Self::Error> {
+		Ok(Weight::zero())
+	}
+
+	fn on_liquidity_changed_weight() -> Weight {
+		Weight::zero()
+	}
+
+	fn on_trade_weight() -> Weight {
+		Weight::zero()
+	}
+
+	fn on_trade_fee(
+		fee_account: AccountId,
+		_trader: AccountId,
+		asset: AssetId,
+		amount: Balance,
+	) -> Result<Balance, Self::Error> {
+		let percentage = ON_TRADE_WITHDRAWAL.with(|v| *v.borrow());
+		let to_take = percentage.mul_floor(amount);
+		Tokens::withdraw(asset, &fee_account, to_take)?;
+		Ok(to_take)
 	}
 }

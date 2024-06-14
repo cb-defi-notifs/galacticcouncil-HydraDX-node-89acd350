@@ -1,13 +1,14 @@
 use crate::types::AssetReserveState;
-use frame_support::dispatch::fmt::Debug;
 use frame_support::ensure;
 use frame_support::traits::Contains;
 use frame_support::weights::Weight;
 use hydra_dx_math::ema::EmaPrice;
 use hydra_dx_math::omnipool::types::AssetStateChange;
-use sp_runtime::traits::{CheckedAdd, CheckedMul, Get, Saturating};
+use sp_runtime::traits::{CheckedAdd, CheckedMul, Get, Saturating, Zero};
 use sp_runtime::{DispatchError, FixedPointNumber, FixedU128, Permill};
+use sp_std::fmt::Debug;
 
+/// Asset In/Out information used in hooks.
 pub struct AssetInfo<AssetId, Balance>
 where
 	Balance: Default + Clone,
@@ -16,6 +17,7 @@ where
 	pub before: AssetReserveState<Balance>,
 	pub after: AssetReserveState<Balance>,
 	pub delta_changes: AssetStateChange<Balance>,
+	pub safe_withdrawal: bool,
 }
 
 impl<AssetId, Balance> AssetInfo<AssetId, Balance>
@@ -27,17 +29,19 @@ where
 		before_state: &AssetReserveState<Balance>,
 		after_state: &AssetReserveState<Balance>,
 		delta_changes: &AssetStateChange<Balance>,
+		safe_withdrawal: bool,
 	) -> Self {
 		Self {
 			asset_id,
 			before: (*before_state).clone(),
 			after: (*after_state).clone(),
 			delta_changes: (*delta_changes).clone(),
+			safe_withdrawal,
 		}
 	}
 }
 
-pub trait OmnipoolHooks<Origin, AssetId, Balance>
+pub trait OmnipoolHooks<Origin, AccountId, AssetId, Balance>
 where
 	Balance: Default + Clone,
 {
@@ -53,11 +57,20 @@ where
 
 	fn on_liquidity_changed_weight() -> Weight;
 	fn on_trade_weight() -> Weight;
+
+	/// Returns used amount
+	fn on_trade_fee(
+		fee_account: AccountId,
+		trader: AccountId,
+		asset: AssetId,
+		amount: Balance,
+	) -> Result<Balance, Self::Error>;
 }
 
-impl<Origin, AssetId, Balance> OmnipoolHooks<Origin, AssetId, Balance> for ()
+// Default implementation for no-op hooks.
+impl<Origin, AccountId, AssetId, Balance> OmnipoolHooks<Origin, AccountId, AssetId, Balance> for ()
 where
-	Balance: Default + Clone,
+	Balance: Default + Clone + Zero,
 {
 	type Error = DispatchError;
 
@@ -83,6 +96,15 @@ where
 
 	fn on_trade_weight() -> Weight {
 		Weight::zero()
+	}
+
+	fn on_trade_fee(
+		_fee_account: AccountId,
+		_trader: AccountId,
+		_asset: AssetId,
+		_amount: Balance,
+	) -> Result<Balance, Self::Error> {
+		Ok(Balance::zero())
 	}
 }
 
@@ -127,6 +149,7 @@ where
 	}
 }
 
+/// Ensures that the price is within the bounds of the current spot price and the external oracle price.
 pub struct EnsurePriceWithin<AccountId, AssetId, ExternalOracle, MaxAllowed, WhitelistedAccounts>(
 	sp_std::marker::PhantomData<(AccountId, AssetId, ExternalOracle, MaxAllowed, WhitelistedAccounts)>,
 );

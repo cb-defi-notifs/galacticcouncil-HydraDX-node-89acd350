@@ -18,23 +18,23 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::upper_case_acronyms)]
 
+pub mod evm;
 pub mod liquidity_mining;
 pub mod nft;
+pub mod oracle;
 pub mod pools;
+pub mod price;
 pub mod registry;
 pub mod router;
 
-pub use registry::*;
-pub mod oracle;
 pub use oracle::*;
+pub use registry::*;
 
 use codec::{Decode, Encode};
-use frame_support::dispatch::{self, DispatchError};
-use frame_support::sp_runtime::traits::Zero;
-use frame_support::sp_runtime::RuntimeDebug;
+use frame_support::dispatch::{self};
+use frame_support::sp_runtime::{traits::Zero, DispatchError, RuntimeDebug};
 use frame_support::traits::LockIdentifier;
 use frame_support::weights::Weight;
-#[cfg(feature = "std")]
 use serde::{Deserialize, Serialize};
 use sp_std::vec::Vec;
 
@@ -155,8 +155,9 @@ impl<AssetId> OnCreatePoolHandler<AssetId> for () {
 }
 
 /// Handler used by AMM pools to perform some tasks when a trade is executed.
-pub trait OnTradeHandler<AssetId, Balance> {
+pub trait OnTradeHandler<AssetId, Balance, Price> {
 	/// Include a trade in the average price calculation of the price-oracle pallet.
+	#[allow(clippy::too_many_arguments)]
 	fn on_trade(
 		source: Source,
 		asset_a: AssetId,
@@ -165,6 +166,7 @@ pub trait OnTradeHandler<AssetId, Balance> {
 		amount_b: Balance,
 		liquidity_a: Balance,
 		liquidity_b: Balance,
+		price: Price,
 	) -> Result<Weight, (Weight, DispatchError)>;
 	/// Known overhead for a trade in `on_initialize/on_finalize`.
 	/// Needs to be specified here if we don't want to make AMM pools tightly coupled with the price oracle pallet, otherwise we can't access the weight.
@@ -172,7 +174,7 @@ pub trait OnTradeHandler<AssetId, Balance> {
 	fn on_trade_weight() -> Weight;
 }
 
-impl<AssetId, Balance> OnTradeHandler<AssetId, Balance> for () {
+impl<AssetId, Balance, Price> OnTradeHandler<AssetId, Balance, Price> for () {
 	fn on_trade(
 		_source: Source,
 		_asset_a: AssetId,
@@ -181,6 +183,7 @@ impl<AssetId, Balance> OnTradeHandler<AssetId, Balance> for () {
 		_amount_b: Balance,
 		_liquidity_a: Balance,
 		_liquidity_b: Balance,
+		_price: Price,
 	) -> Result<Weight, (Weight, DispatchError)> {
 		Ok(Weight::zero())
 	}
@@ -193,13 +196,20 @@ pub trait CanCreatePool<AssetId> {
 	fn can_create(asset_a: AssetId, asset_b: AssetId) -> bool;
 }
 
+impl<AssetId> CanCreatePool<AssetId> for () {
+	fn can_create(_asset_a: AssetId, _asset_b: AssetId) -> bool {
+		true
+	}
+}
+
 pub trait LockedBalance<AssetId, AccountId, Balance> {
 	fn get_by_lock(lock_id: LockIdentifier, currency_id: AssetId, who: AccountId) -> Balance;
 }
 
 /// Handler used by AMM pools to perform some tasks when liquidity changes outside of trades.
-pub trait OnLiquidityChangedHandler<AssetId, Balance> {
+pub trait OnLiquidityChangedHandler<AssetId, Balance, Price> {
 	/// Notify that the liquidity for a pair of assets has changed.
+	#[allow(clippy::too_many_arguments)]
 	fn on_liquidity_changed(
 		source: Source,
 		asset_a: AssetId,
@@ -208,6 +218,7 @@ pub trait OnLiquidityChangedHandler<AssetId, Balance> {
 		amount_b: Balance,
 		liquidity_a: Balance,
 		liquidity_b: Balance,
+		price: Price,
 	) -> Result<Weight, (Weight, DispatchError)>;
 	/// Known overhead for a liquidity change in `on_initialize/on_finalize`.
 	/// Needs to be specified here if we don't want to make AMM pools tightly coupled with the price oracle pallet, otherwise we can't access the weight.
@@ -215,7 +226,7 @@ pub trait OnLiquidityChangedHandler<AssetId, Balance> {
 	fn on_liquidity_changed_weight() -> Weight;
 }
 
-impl<AssetId, Balance> OnLiquidityChangedHandler<AssetId, Balance> for () {
+impl<AssetId, Balance, Price> OnLiquidityChangedHandler<AssetId, Balance, Price> for () {
 	fn on_liquidity_changed(
 		_source: Source,
 		_a: AssetId,
@@ -224,6 +235,7 @@ impl<AssetId, Balance> OnLiquidityChangedHandler<AssetId, Balance> for () {
 		_amount_b: Balance,
 		_liq_a: Balance,
 		_liq_b: Balance,
+		_price: Price,
 	) -> Result<Weight, (Weight, DispatchError)> {
 		Ok(Weight::zero())
 	}
@@ -243,4 +255,16 @@ pub trait AMMPosition<AssetId, Balance> {
 		asset_b: AssetId,
 		shares_amount: Balance,
 	) -> Result<(Balance, Balance), Self::Error>;
+}
+
+/// Provides account's fee payment asset
+pub trait AccountFeeCurrency<AccountId> {
+	type AssetId;
+	fn get(a: &AccountId) -> Self::AssetId;
+}
+
+/// Provides account's balance of fee asset currency in a given currency
+pub trait AccountFeeCurrencyBalanceInCurrency<AssetId, AccountId> {
+	type Output;
+	fn get_balance_in_currency(to_currency: AssetId, account: &AccountId) -> Self::Output;
 }
